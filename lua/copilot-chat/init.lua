@@ -64,43 +64,35 @@ local function apply_to_source_buffer(source_buf, code)
   return true, vim.api.nvim_buf_get_name(source_buf)
 end
 
-local function show_diff_preview(old_text, new_text, filetype)
+local function show_diff_preview(old_text, new_text)
   local api = vim.api
-  local origin_tab = api.nvim_get_current_tabpage()
 
-  vim.cmd("tabnew")
-  local preview_tab = api.nvim_get_current_tabpage()
+  local ok, diff = pcall(vim.diff, old_text, new_text, {
+    result_type = "unified",
+    ctxlen = 3,
+  })
 
-  local function setup_buf(buf, content)
-    api.nvim_set_option_value("buftype", "nofile", { buf = buf })
-    api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
-    api.nvim_set_option_value("swapfile", false, { buf = buf })
-    if filetype and filetype ~= "" then
-      api.nvim_set_option_value("filetype", filetype, { buf = buf })
-    end
-    api.nvim_set_option_value("modifiable", true, { buf = buf })
-    api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(content, "\n", { plain = true }))
-    api.nvim_set_option_value("modifiable", false, { buf = buf })
+  if not ok then
+    diff = "--- current\n+++ proposed\n@@\n(diff generation failed)\n" .. new_text
+  elseif not diff or diff == "" then
+    diff = "No differences detected."
   end
 
-  local old_buf = api.nvim_create_buf(false, true)
-  api.nvim_win_set_buf(0, old_buf)
-  setup_buf(old_buf, old_text)
+  vim.cmd("botright 18new")
+  local preview_win = api.nvim_get_current_win()
+  local preview_buf = api.nvim_get_current_buf()
 
-  vim.cmd("vsplit")
-  local new_buf = api.nvim_create_buf(false, true)
-  api.nvim_win_set_buf(0, new_buf)
-  setup_buf(new_buf, new_text)
-
-  vim.cmd("windo diffthis")
+  api.nvim_set_option_value("buftype", "nofile", { buf = preview_buf })
+  api.nvim_set_option_value("bufhidden", "wipe", { buf = preview_buf })
+  api.nvim_set_option_value("swapfile", false, { buf = preview_buf })
+  api.nvim_set_option_value("filetype", "diff", { buf = preview_buf })
+  api.nvim_set_option_value("modifiable", true, { buf = preview_buf })
+  api.nvim_buf_set_lines(preview_buf, 0, -1, false, vim.split(diff, "\n", { plain = true }))
+  api.nvim_set_option_value("modifiable", false, { buf = preview_buf })
 
   local close_preview = function()
-    if preview_tab and api.nvim_tabpage_is_valid(preview_tab) then
-      api.nvim_set_current_tabpage(preview_tab)
-      vim.cmd("tabclose")
-    end
-    if origin_tab and api.nvim_tabpage_is_valid(origin_tab) then
-      api.nvim_set_current_tabpage(origin_tab)
+    if preview_win and api.nvim_win_is_valid(preview_win) then
+      api.nvim_win_close(preview_win, true)
     end
   end
 
@@ -109,10 +101,9 @@ end
 
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
   local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-  local filetype = vim.bo[source_buf].filetype
 
   vim.schedule(function()
-    local close_preview = show_diff_preview(old_text, new_code, filetype)
+    local close_preview = show_diff_preview(old_text, new_code)
     vim.ui.select({ "Apply", "Skip" }, { prompt = "Apply Copilot changes to current file?" }, function(choice)
       if close_preview then
         close_preview()
