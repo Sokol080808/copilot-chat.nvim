@@ -5,6 +5,8 @@ local M = {
   chat_win = nil,
   input_buf = nil,
   input_win = nil,
+  source_buf = nil,
+  source_win = nil,
 }
 
 --- Open the Copilot Chat UI
@@ -14,6 +16,9 @@ function M.open()
     api.nvim_set_current_win(M.chat_win)
     return
   end
+
+  M.source_win = api.nvim_get_current_win()
+  M.source_buf = api.nvim_win_get_buf(M.source_win)
 
   -- 1. Create the Chat Feed buffer
   M.chat_buf = api.nvim_create_buf(false, true)
@@ -85,6 +90,21 @@ function M.prompt_input(on_submit)
       on_submit(input)
     end
   end)
+end
+
+function M.get_source_buf()
+  if M.source_buf and api.nvim_buf_is_valid(M.source_buf) and M.source_buf ~= M.chat_buf then
+    return M.source_buf
+  end
+
+  for _, win in ipairs(api.nvim_list_wins()) do
+    local buf = api.nvim_win_get_buf(win)
+    if buf ~= M.chat_buf and api.nvim_buf_is_valid(buf) then
+      return buf
+    end
+  end
+
+  return nil
 end
 
 --- Stream a chunk of text to the chat buffer
