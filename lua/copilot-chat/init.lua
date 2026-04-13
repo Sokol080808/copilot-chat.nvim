@@ -67,25 +67,57 @@ end
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
   vim.schedule(function()
     local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-    
-    -- Apply the new code immediately for preview
-    local new_lines = vim.split(new_code, "\n", { plain = true })
-    vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
-
     local indices = vim.diff(old_text, new_code, { result_type = "indices" })
+
+    local old_lines = vim.split(old_text, "\n", { plain = true })
+    local new_lines = vim.split(new_code, "\n", { plain = true })
+
     local ns = vim.api.nvim_create_namespace("CopilotChatPreview")
     vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
 
-    if indices then
+    if indices and #indices > 0 then
+      local combined_lines = {}
+      local highlights = {}
+      local last_new = 1
+      local last_old = 1
+
       for _, hunk in ipairs(indices) do
+        local start_old, count_old = hunk[1], hunk[2]
         local start_new, count_new = hunk[3], hunk[4]
-        if count_new > 0 then
-          for i = 0, count_new - 1 do
-            local ln = start_new - 1 + i
-            vim.api.nvim_buf_add_highlight(source_buf, ns, "DiffAdd", ln, 0, -1)
-          end
+
+        while last_new < start_new do
+          table.insert(combined_lines, new_lines[last_new])
+          last_new = last_new + 1
+          last_old = last_old + 1
         end
+
+        for i = 0, count_old - 1 do
+          table.insert(combined_lines, old_lines[start_old + i])
+          table.insert(highlights, { #combined_lines - 1, "DiffDelete" })
+        end
+
+        for i = 0, count_new - 1 do
+          table.insert(combined_lines, new_lines[start_new + i])
+          table.insert(highlights, { #combined_lines - 1, "DiffAdd" })
+        end
+
+        last_old = last_old + count_old
+        last_new = last_new + count_new
       end
+
+      while last_new <= #new_lines do
+        table.insert(combined_lines, new_lines[last_new])
+        last_new = last_new + 1
+      end
+
+      vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, combined_lines)
+
+      for _, hl in ipairs(highlights) do
+        vim.api.nvim_buf_add_highlight(source_buf, ns, hl[2], hl[1], 0, -1)
+      end
+    else
+      -- No diff, just apply the new code unconditionally
+      vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
     end
 
     vim.cmd("redraw") -- Force UI update so the user can see the diff before the prompt blocks
@@ -93,10 +125,9 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
     vim.ui.select({ "Apply", "Skip" }, { prompt = "Keep these Copilot changes?" }, function(choice)
       vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
       if choice == "Apply" then
+        vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
         on_apply()
       else
-        -- Revert to original
-        local old_lines = vim.split(old_text, "\n", { plain = true })
         vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, old_lines)
         on_skip()
       end
