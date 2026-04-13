@@ -85,10 +85,11 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
         local start_old, count_old = hunk[1], hunk[2]
         local start_new, count_new = hunk[3], hunk[4]
 
-        while last_new < start_new do
+        local insert_up_to = count_new == 0 and start_new or (start_new - 1)
+
+        while last_new <= insert_up_to do
           table.insert(combined_lines, new_lines[last_new])
           last_new = last_new + 1
-          last_old = last_old + 1
         end
 
         for i = 0, count_old - 1 do
@@ -101,8 +102,7 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
           table.insert(highlights, { #combined_lines - 1, "DiffAdd" })
         end
 
-        last_old = last_old + count_old
-        last_new = last_new + count_new
+        last_new = start_new + count_new
       end
 
       while last_new <= #new_lines do
