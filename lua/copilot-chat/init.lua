@@ -11,6 +11,13 @@ M.config = {
 
 M.history = {}
 
+local function ensure_diff_highlights()
+  -- Strong fallback colors so diff remains visible regardless of colorscheme/plugins.
+  vim.api.nvim_set_hl(0, "CopilotChatDiffAdd", { fg = "#b8f2c8", bg = "#10321f", default = false })
+  vim.api.nvim_set_hl(0, "CopilotChatDiffDelete", { fg = "#ffd1d1", bg = "#3a1414", default = false })
+  vim.api.nvim_set_hl(0, "CopilotChatDiffChange", { fg = "#ffe7b3", bg = "#3a2f0f", default = false })
+end
+
 local function ensure_chat_history()
   if #M.history == 0 then
     table.insert(M.history, { role = "system", content = M.config.system_prompt })
@@ -66,6 +73,7 @@ end
 
 local function show_diff_preview(old_text, new_text)
   local api = vim.api
+  ensure_diff_highlights()
 
   local ok, diff = pcall(vim.diff, old_text, new_text, {
     result_type = "unified",
@@ -89,6 +97,7 @@ local function show_diff_preview(old_text, new_text)
   api.nvim_set_option_value("swapfile", false, { buf = preview_buf })
   api.nvim_set_option_value("filetype", "diff", { buf = preview_buf })
   api.nvim_set_option_value("winfixheight", true, { win = preview_win })
+  api.nvim_set_option_value("cursorline", false, { win = preview_win })
   api.nvim_set_option_value("modifiable", true, { buf = preview_buf })
   local lines = vim.split(diff, "\n", { plain = true })
   api.nvim_buf_set_lines(preview_buf, 0, -1, false, lines)
@@ -97,11 +106,11 @@ local function show_diff_preview(old_text, new_text)
   for i, line in ipairs(lines) do
     local lnum = i - 1
     if vim.startswith(line, "@@") then
-      api.nvim_buf_add_highlight(preview_buf, -1, "DiffChange", lnum, 0, -1)
+      api.nvim_buf_add_highlight(preview_buf, -1, "CopilotChatDiffChange", lnum, 0, -1)
     elseif vim.startswith(line, "+") and not vim.startswith(line, "+++") then
-      api.nvim_buf_add_highlight(preview_buf, -1, "DiffAdd", lnum, 0, -1)
+      api.nvim_buf_add_highlight(preview_buf, -1, "CopilotChatDiffAdd", lnum, 0, -1)
     elseif vim.startswith(line, "-") and not vim.startswith(line, "---") then
-      api.nvim_buf_add_highlight(preview_buf, -1, "DiffDelete", lnum, 0, -1)
+      api.nvim_buf_add_highlight(preview_buf, -1, "CopilotChatDiffDelete", lnum, 0, -1)
     end
   end
 

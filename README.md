@@ -40,7 +40,8 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 {
     "Sokol080808/copilot-chat.nvim",
     dependencies = {
-        -- Future dependencies
+        -- Optional: better diff visuals in some setups
+        "nvim-lua/plenary.nvim",
     },
     opts = {
         -- Optional configuration goes here
