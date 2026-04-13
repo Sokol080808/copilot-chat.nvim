@@ -79,11 +79,12 @@ local function build_diff_preview(old_text, new_text)
 end
 
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
-  local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-
   vim.schedule(function()
+    local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
     local diff = build_diff_preview(old_text, new_code)
     ui.append_diff_preview(diff)
+    vim.cmd("redraw") -- Force UI update so the user can see the diff before the prompt blocks
+
     vim.ui.select({ "Apply", "Skip" }, { prompt = "Apply Copilot changes to current file?" }, function(choice)
       if choice == "Apply" then
         on_apply()

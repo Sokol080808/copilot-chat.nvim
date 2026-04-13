@@ -94,19 +94,11 @@ end
 
 local diff_ns = api.nvim_create_namespace("CopilotChatDiff")
 
-local function ensure_diff_highlights()
-  -- Link to standard Neovim diff groups to match the user's colorscheme
-  api.nvim_set_hl(0, "CopilotChatDiffAdd", { link = "DiffAdd", default = true })
-  api.nvim_set_hl(0, "CopilotChatDiffDelete", { link = "DiffDelete", default = true })
-  api.nvim_set_hl(0, "CopilotChatDiffChange", { link = "DiffChange", default = true })
-end
 
 function M.append_diff_preview(diff_text)
   if not M.chat_buf or not api.nvim_buf_is_valid(M.chat_buf) then
     return
   end
-
-  ensure_diff_highlights()
 
   local diff_lines = vim.split(diff_text, "\n", { plain = true })
   local header = { "", "### Diff Preview", "```diff" }
@@ -124,11 +116,11 @@ function M.append_diff_preview(diff_text)
   for i, line in ipairs(diff_lines) do
     local lnum = diff_start + i - 1
     if vim.startswith(line, "@@") then
-      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "CopilotChatDiffChange", lnum, 0, -1)
+      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "DiffChange", lnum, 0, -1)
     elseif vim.startswith(line, "+") and not vim.startswith(line, "+++") then
-      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "CopilotChatDiffAdd", lnum, 0, -1)
+      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "DiffAdd", lnum, 0, -1)
     elseif vim.startswith(line, "-") and not vim.startswith(line, "---") then
-      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "CopilotChatDiffDelete", lnum, 0, -1)
+      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "DiffDelete", lnum, 0, -1)
     end
   end
 
