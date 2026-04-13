@@ -64,31 +64,40 @@ local function apply_to_source_buffer(source_buf, code)
   return true, vim.api.nvim_buf_get_name(source_buf)
 end
 
-local function build_diff_preview(old_text, new_text)
-  local ok, diff = pcall(vim.diff, old_text, new_text, {
-    result_type = "unified",
-    ctxlen = 3,
-  })
-
-  if not ok then
-    diff = "--- current\n+++ proposed\n@@\n(diff generation failed)\n" .. new_text
-  elseif not diff or diff == "" then
-    diff = "No differences detected."
-  end
-  return diff
-end
-
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
   vim.schedule(function()
     local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-    local diff = build_diff_preview(old_text, new_code)
-    ui.append_diff_preview(diff)
+    
+    -- Apply the new code immediately for preview
+    local new_lines = vim.split(new_code, "\n", { plain = true })
+    vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
+
+    local indices = vim.diff(old_text, new_code, { result_type = "indices" })
+    local ns = vim.api.nvim_create_namespace("CopilotChatPreview")
+    vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
+
+    if indices then
+      for _, hunk in ipairs(indices) do
+        local start_new, count_new = hunk[3], hunk[4]
+        if count_new > 0 then
+          for i = 0, count_new - 1 do
+            local ln = start_new - 1 + i
+            vim.api.nvim_buf_add_highlight(source_buf, ns, "DiffAdd", ln, 0, -1)
+          end
+        end
+      end
+    end
+
     vim.cmd("redraw") -- Force UI update so the user can see the diff before the prompt blocks
 
-    vim.ui.select({ "Apply", "Skip" }, { prompt = "Apply Copilot changes to current file?" }, function(choice)
+    vim.ui.select({ "Apply", "Skip" }, { prompt = "Keep these Copilot changes?" }, function(choice)
+      vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
       if choice == "Apply" then
         on_apply()
       else
+        -- Revert to original
+        local old_lines = vim.split(old_text, "\n", { plain = true })
+        vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, old_lines)
         on_skip()
       end
     end)
