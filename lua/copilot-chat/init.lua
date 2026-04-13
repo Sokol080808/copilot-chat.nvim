@@ -78,7 +78,9 @@ local function show_diff_preview(old_text, new_text)
     diff = "No differences detected."
   end
 
-  vim.cmd("botright 18new")
+  -- Keep preview anchored to the bottom to avoid centered/floating placement by window plugins.
+  vim.cmd("botright 18split")
+  vim.cmd("enew")
   local preview_win = api.nvim_get_current_win()
   local preview_buf = api.nvim_get_current_buf()
 
@@ -86,8 +88,23 @@ local function show_diff_preview(old_text, new_text)
   api.nvim_set_option_value("bufhidden", "wipe", { buf = preview_buf })
   api.nvim_set_option_value("swapfile", false, { buf = preview_buf })
   api.nvim_set_option_value("filetype", "diff", { buf = preview_buf })
+  api.nvim_set_option_value("winfixheight", true, { win = preview_win })
   api.nvim_set_option_value("modifiable", true, { buf = preview_buf })
-  api.nvim_buf_set_lines(preview_buf, 0, -1, false, vim.split(diff, "\n", { plain = true }))
+  local lines = vim.split(diff, "\n", { plain = true })
+  api.nvim_buf_set_lines(preview_buf, 0, -1, false, lines)
+
+  -- Add explicit highlights so diff colors appear even if syntax highlighting is disabled.
+  for i, line in ipairs(lines) do
+    local lnum = i - 1
+    if vim.startswith(line, "@@") then
+      api.nvim_buf_add_highlight(preview_buf, -1, "DiffChange", lnum, 0, -1)
+    elseif vim.startswith(line, "+") and not vim.startswith(line, "+++") then
+      api.nvim_buf_add_highlight(preview_buf, -1, "DiffAdd", lnum, 0, -1)
+    elseif vim.startswith(line, "-") and not vim.startswith(line, "---") then
+      api.nvim_buf_add_highlight(preview_buf, -1, "DiffDelete", lnum, 0, -1)
+    end
+  end
+
   api.nvim_set_option_value("modifiable", false, { buf = preview_buf })
 
   local close_preview = function()
