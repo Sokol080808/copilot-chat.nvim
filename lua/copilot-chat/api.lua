@@ -98,12 +98,19 @@ function M.stream_response(prompt, on_chunk, on_done)
     return
   end
 
-  local payload = {
-    model = DEFAULT_MODEL,
+  local messages = nil
+  if type(prompt) == "table" then
+    messages = prompt
+  else
     messages = {
       { role = "system", content = "You are an AI programming assistant integrated into a Neovim editor." },
       { role = "user", content = prompt },
-    },
+    }
+  end
+
+  local payload = {
+    model = DEFAULT_MODEL,
+    messages = messages,
     stream = true,
   }
 
@@ -121,6 +128,7 @@ function M.stream_response(prompt, on_chunk, on_done)
   local debug_output = {}
   local emitted_text = false
   local sse_buffer = ""
+  local assistant_text = ""
 
   local function emit_api_error(parsed)
     if type(parsed) == "table" and parsed.error then
@@ -153,6 +161,7 @@ function M.stream_response(prompt, on_chunk, on_done)
         local text = extract_text_from_event(parsed)
         if text and text ~= "" then
           emitted_text = true
+          assistant_text = assistant_text .. text
           on_chunk(text)
         end
       end
@@ -172,6 +181,7 @@ function M.stream_response(prompt, on_chunk, on_done)
       local text = extract_text_from_event(parsed)
       if text and text ~= "" then
         emitted_text = true
+        assistant_text = assistant_text .. text
         on_chunk(text)
       end
     end
@@ -223,7 +233,7 @@ function M.stream_response(prompt, on_chunk, on_done)
         on_chunk("\n⚠️ **No text generated**: Response arrived but contained no parsable text chunks.\n")
       end
       if on_done then
-        on_done()
+        on_done(assistant_text)
       end
     end,
   })
