@@ -206,27 +206,43 @@ function M.stream_response(prompt, on_chunk, on_done)
   }
 
   -- Launch async job to stream the JSON data
+  local debug_output = {}
   vim.fn.jobstart(cmd, {
     on_stdout = function(_, data_lines)
       for _, line in ipairs(data_lines) do
-        if line and line:match("^data: ") then
-          local json_str = line:gsub("^data: ", "")
-          if json_str == "[DONE]" then
-            -- Expected end of stream
-          else
-            local ok, parsed = pcall(vim.fn.json_decode, json_str)
-            if ok and parsed and parsed.choices and parsed.choices[1].delta and parsed.choices[1].delta.content then
-              on_chunk(parsed.choices[1].delta.content)
+        if line and line ~= "" then
+          table.insert(debug_output, line)
+          if line:match("^data: ") then
+            local json_str = line:gsub("^data: ", "")
+            if json_str == "[DONE]" then
+              -- Expected end of stream
+            else
+              local ok, parsed = pcall(vim.fn.json_decode, json_str)
+              if ok and parsed and parsed.choices and parsed.choices[1].delta and parsed.choices[1].delta.content then
+                on_chunk(parsed.choices[1].delta.content)
+              end
             end
+          elseif line:match("{") then
+            -- Fallback: print raw non-data json
+            on_chunk("\n⚠️ **Raw Debug**: `" .. line .. "`\n")
           end
-        elseif line and line:match('{"error"') then
-          on_chunk("\n⚠️ **API Error**: " .. line .. "\n")
-        elseif line and line:match('{"message"') then
-          on_chunk("\n⚠️ **API Error**: " .. line .. "\n")
         end
       end
     end,
-    on_exit = function()
+    on_stderr = function(_, data_lines)
+      for _, line in ipairs(data_lines) do
+        if line and line ~= "" then
+          on_chunk("\n⚠️ **Curl Error**: `" .. line .. "`\n")
+        end
+      end
+    end,
+    on_exit = function(_, code)
+      if code ~= 0 then
+        on_chunk("\n⚠️ **Process exited with code**: `" .. tostring(code) .. "`\n")
+      end
+      if #debug_output == 0 then
+        on_chunk("\n⚠️ **Error**: Received completely empty response from server.\n")
+      end
       if on_done then on_done() end
     end,
   })
