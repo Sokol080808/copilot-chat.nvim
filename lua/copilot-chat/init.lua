@@ -83,11 +83,13 @@ local function show_diff_preview(old_text, new_text, filetype)
     api.nvim_set_option_value("modifiable", false, { buf = buf })
   end
 
-  local old_buf = api.nvim_get_current_buf()
+  local old_buf = api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(0, old_buf)
   setup_buf(old_buf, old_text)
 
   vim.cmd("vsplit")
-  local new_buf = api.nvim_get_current_buf()
+  local new_buf = api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(0, new_buf)
   setup_buf(new_buf, new_text)
 
   vim.cmd("windo diffthis")
