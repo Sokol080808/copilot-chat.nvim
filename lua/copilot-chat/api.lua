@@ -95,22 +95,56 @@ local function extract_message_content(parsed)
   return nil
 end
 
-function M.detect_edit_intent(prompt)
+function M.detect_edit_intent(prompt, context)
   local token = get_models_token()
   if not token then
     return false
   end
+
+  local ctx = context or {}
+  local context_text = "has_open_file=" .. tostring(ctx.has_open_file == true)
+    .. "\nfile_path=" .. (ctx.file_path or "")
+    .. "\nfiletype=" .. (ctx.filetype or "")
 
   local payload = {
     model = INTENT_MODEL,
     messages = {
       {
         role = "system",
-        content = "Classify whether the user asks to modify the currently open file. Reply with strict JSON only: {\"apply\":true} or {\"apply\":false}.",
+        content = "You classify whether a Neovim chat request should edit the current file. "
+          .. "Use provided file context. If the user asks to write/implement/add/fix/refactor code and an open file exists, usually return true. "
+          .. "Return false only for pure explanation/Q&A requests. "
+          .. "Reply with strict JSON only: {\"apply\":true} or {\"apply\":false}.",
       },
       {
         role = "user",
-        content = prompt,
+        content = "Context:\n"
+          .. "has_open_file=true\n"
+          .. "file_path=/tmp/main.py\n"
+          .. "filetype=python\n\n"
+          .. "Prompt: write a + b problem\n\n"
+          .. "Answer JSON:",
+      },
+      {
+        role = "assistant",
+        content = "{\"apply\":true}",
+      },
+      {
+        role = "user",
+        content = "Context:\n"
+          .. "has_open_file=true\n"
+          .. "file_path=/tmp/main.py\n"
+          .. "filetype=python\n\n"
+          .. "Prompt: explain what this code does\n\n"
+          .. "Answer JSON:",
+      },
+      {
+        role = "assistant",
+        content = "{\"apply\":false}",
+      },
+      {
+        role = "user",
+        content = "Context:\n" .. context_text .. "\n\nPrompt: " .. prompt .. "\n\nAnswer JSON:",
       },
     },
     stream = false,

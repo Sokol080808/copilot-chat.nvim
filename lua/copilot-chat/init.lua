@@ -22,7 +22,14 @@ local function should_auto_apply(prompt)
     return false
   end
 
-  return api.detect_edit_intent(prompt)
+  local source_buf = ui.get_source_buf()
+  local context = {
+    has_open_file = source_buf and vim.api.nvim_buf_is_valid(source_buf) and vim.bo[source_buf].buftype == "" or false,
+    file_path = source_buf and vim.api.nvim_buf_get_name(source_buf) or "",
+    filetype = source_buf and vim.bo[source_buf].filetype or "",
+  }
+
+  return api.detect_edit_intent(prompt, context)
 end
 
 local function extract_code_block(text)
