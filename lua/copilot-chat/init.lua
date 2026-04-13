@@ -151,7 +151,10 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
       vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, combined_lines)
 
       for _, hl in ipairs(highlights) do
-        vim.api.nvim_buf_add_highlight(source_buf, ns, hl[2], hl[1], 0, -1)
+        vim.api.nvim_buf_set_extmark(source_buf, ns, hl[1], 0, {
+          line_hl_group = hl[2],
+          priority = 120,
+        })
       end
     else
       -- No diff, just apply the new code unconditionally
