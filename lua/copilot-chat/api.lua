@@ -12,13 +12,11 @@ local function extract_text_from_event(parsed)
     return nil
   end
 
-  -- Chat streaming shape: choices[1].delta.content = "..."
   if type(choice.delta) == "table" then
     if type(choice.delta.content) == "string" then
       return choice.delta.content
     end
 
-    -- Some providers return content as a list of blocks.
     if type(choice.delta.content) == "table" then
       local out = {}
       for _, item in ipairs(choice.delta.content) do
@@ -38,12 +36,10 @@ local function extract_text_from_event(parsed)
     end
   end
 
-  -- Non-stream/fallback shape: choices[1].message.content = "..."
   if type(choice.message) == "table" and type(choice.message.content) == "string" then
     return choice.message.content
   end
 
-  -- Legacy text completion shape
   if type(choice.text) == "string" then
     return choice.text
   end
@@ -57,9 +53,7 @@ local function get_models_token()
     return env
   end
 
-  -- Fallback to GitHub CLI if available (`gh auth token`).
-  local gh = vim.fn.executable("gh")
-  if gh == 1 then
+  if vim.fn.executable("gh") == 1 then
     local out = vim.fn.system({ "gh", "auth", "token" })
     if vim.v.shell_error == 0 then
       out = out:gsub("%s+$", "")
@@ -72,16 +66,14 @@ local function get_models_token()
   return nil
 end
 
---- Start official GitHub authentication using GitHub CLI.
---- This uses documented account auth and then reuses `gh auth token`.
---- @param on_chunk function
---- @param on_done function
 function M.login(on_chunk, on_done)
   if vim.fn.executable("gh") ~= 1 then
     on_chunk("⚠️ **GitHub CLI not found**: install `gh` and run `gh auth login -h github.com -w`.\n")
     on_chunk("Or set `GITHUB_TOKEN` manually with `models` scope.\n")
     on_chunk("Create token: https://github.com/settings/tokens\n")
-    if on_done then on_done() end
+    if on_done then
+      on_done()
+    end
     return
   end
 
@@ -94,13 +86,11 @@ function M.login(on_chunk, on_done)
     vim.cmd("terminal gh auth login -h github.com -w")
   end)
 
-  if on_done then on_done() end
+  if on_done then
+    on_done()
+  end
 end
 
---- Fetch response from the official GitHub Models API.
---- @param prompt string The user prompt
---- @param on_chunk function Callback for each text chunk
---- @param on_done function Callback when finished
 function M.stream_response(prompt, on_chunk, on_done)
   local token = get_models_token()
   if not token then
@@ -112,14 +102,11 @@ function M.stream_response(prompt, on_chunk, on_done)
     model = DEFAULT_MODEL,
     messages = {
       { role = "system", content = "You are an AI programming assistant integrated into a Neovim editor." },
-      { role = "user", content = prompt }
+      { role = "user", content = prompt },
     },
-    stream = true
+    stream = true,
   }
 
-  local json_payload = vim.fn.json_encode(payload)
-  
-  -- Official endpoint from GitHub Models quickstart.
   local cmd = {
     "curl",
     "-N", "-s", "-L", "-X", "POST",
@@ -128,62 +115,89 @@ function M.stream_response(prompt, on_chunk, on_done)
     "-H", "Authorization: Bearer " .. token,
     "-H", "X-GitHub-Api-Version: 2022-11-28",
     "-H", "Content-Type: application/json",
-    "-d", json_payload
+    "-d", vim.fn.json_encode(payload),
   }
 
-  -- Launch async job to stream the JSON data
   local debug_output = {}
   local emitted_text = false
+  local sse_buffer = ""
+
+  local function emit_api_error(parsed)
+    if type(parsed) == "table" and parsed.error then
+      on_chunk("\n⚠️ **API Error**: " .. vim.fn.json_encode(parsed.error) .. "\n")
+      on_chunk("Hint: GitHub Models requires a token with `models` scope.\n")
+      on_chunk("Create one: https://github.com/settings/tokens\n")
+      on_chunk("Then export it: `export GITHUB_TOKEN=...`\n")
+      return true
+    end
+    return false
+  end
+
+  local function handle_event_line(line)
+    if not line or line == "" then
+      return
+    end
+
+    if line:match("^data:") then
+      local json_str = line:gsub("^data:%s*", "")
+      if json_str == "" or json_str == "[DONE]" then
+        return
+      end
+
+      local ok, parsed = pcall(vim.fn.json_decode, json_str)
+      if ok and parsed then
+        if emit_api_error(parsed) then
+          return
+        end
+
+        local text = extract_text_from_event(parsed)
+        if text and text ~= "" then
+          emitted_text = true
+          on_chunk(text)
+        end
+      end
+      return
+    end
+
+    if line:match("^event:") or line:match("^id:") or line:match("^:") then
+      return
+    end
+
+    local ok, parsed = pcall(vim.fn.json_decode, line)
+    if ok and parsed then
+      if emit_api_error(parsed) then
+        return
+      end
+
+      local text = extract_text_from_event(parsed)
+      if text and text ~= "" then
+        emitted_text = true
+        on_chunk(text)
+      end
+    end
+  end
+
   vim.fn.jobstart(cmd, {
     on_stdout = function(_, data_lines)
-      for _, line in ipairs(data_lines) do
-        if line and line ~= "" then
-          table.insert(debug_output, line)
-          if line:match("^data: ") then
-            local json_str = line:gsub("^data: ", "")
-            if json_str == "[DONE]" then
-              -- Expected end of stream
-            else
-              local ok, parsed = pcall(vim.fn.json_decode, json_str)
-              if ok and parsed then
-                if parsed.error then
-                  on_chunk("\n⚠️ **API Error**: " .. vim.fn.json_encode(parsed.error) .. "\n")
-                else
-                  local text = extract_text_from_event(parsed)
-                  if text and text ~= "" then
-                    emitted_text = true
-                    on_chunk(text)
-                  end
-                end
-              else
-                on_chunk("\n⚠️ **Parse Error**: Could not decode stream event.\n")
-              end
-            end
-          else
-            local ok, parsed = pcall(vim.fn.json_decode, line)
-            if ok and parsed then
-              if parsed.error then
-                on_chunk("\n⚠️ **API Error**: " .. vim.fn.json_encode(parsed.error) .. "\n")
-                on_chunk("Hint: GitHub Models requires a token with `models` scope.\n")
-                on_chunk("Create one: https://github.com/settings/tokens\n")
-                on_chunk("Then export it: `export GITHUB_TOKEN=...`\n")
-                on_chunk("Hint: GitHub Models requires a token with `models` scope.\n")
-                on_chunk("Create one: https://github.com/settings/tokens\n")
-                on_chunk("Then export it: `export GITHUB_TOKEN=...`\n")
-              else
-                local text = extract_text_from_event(parsed)
-                if text and text ~= "" then
-                  emitted_text = true
-                  on_chunk(text)
-                else
-                  on_chunk("\n⚠️ **Debug**: Received JSON without text payload.\n")
-                end
-              end
-            else
-              on_chunk("\n`" .. line .. "`\n")
-            end
+      for i, part in ipairs(data_lines) do
+        if part then
+          sse_buffer = sse_buffer .. part
+          if i < #data_lines then
+            sse_buffer = sse_buffer .. "\n"
           end
         end
+      end
+
+      while true do
+        local newline_idx = sse_buffer:find("\n", 1, true)
+        if not newline_idx then
+          break
+        end
+
+        local line = sse_buffer:sub(1, newline_idx - 1):gsub("\r$", "")
+        sse_buffer = sse_buffer:sub(newline_idx + 1)
+        table.insert(debug_output, line)
+        handle_event_line(line)
       end
     end,
     on_stderr = function(_, data_lines)
@@ -194,6 +208,12 @@ function M.stream_response(prompt, on_chunk, on_done)
       end
     end,
     on_exit = function(_, code)
+      if sse_buffer ~= "" then
+        local line = sse_buffer:gsub("\r$", "")
+        table.insert(debug_output, line)
+        handle_event_line(line)
+      end
+
       if code ~= 0 then
         on_chunk("\n⚠️ **Process exited with code**: `" .. tostring(code) .. "`\n")
       end
@@ -202,7 +222,9 @@ function M.stream_response(prompt, on_chunk, on_done)
       elseif not emitted_text then
         on_chunk("\n⚠️ **No text generated**: Response arrived but contained no parsable text chunks.\n")
       end
-      if on_done then on_done() end
+      if on_done then
+        on_done()
+      end
     end,
   })
 end
