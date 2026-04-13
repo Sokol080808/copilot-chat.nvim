@@ -56,6 +56,83 @@ local function refresh_copilot_token(github_token)
   return nil
 end
 
+--- Start polling for the token after giving the user the device code
+local function poll_for_token(device_code, interval, max_attempts, on_chunk, on_done)
+  if max_attempts <= 0 then
+    on_chunk("\n⚠️ **Timeout**: Login process timed out. Try again later.\n")
+    if on_done then on_done() end
+    return
+  end
+
+  local poll_cmd = {
+    "curl", "-s", "-X", "POST",
+    "https://github.com/login/oauth/access_token",
+    "-H", "Accept: application/json",
+    "-d", "client_id=" .. copilot_client_id .. "&device_code=" .. device_code .. "&grant_type=urn:ietf:params:oauth:grant-type:device_code"
+  }
+
+  local stdout_data = {}
+  
+  vim.fn.jobstart(poll_cmd, {
+    on_stdout = function(_, data)
+      for _, line in ipairs(data) do
+        table.insert(stdout_data, line)
+      end
+    end,
+    on_exit = function()
+      local result = table.concat(stdout_data, "")
+      local ok, parsed = pcall(vim.fn.json_decode, result)
+      
+      if ok and parsed then
+        if parsed.access_token then
+          -- Auto-save the token so future launches work automatically!
+          local config_dir = vim.fn.expand("~/.config/github-copilot")
+          vim.fn.mkdir(config_dir, "p")
+          local hosts_file = config_dir .. "/hosts.json"
+          
+          local hosts_data = {}
+          local f_in = io.open(hosts_file, "r")
+          if f_in then
+            local content = f_in:read("*a")
+            f_in:close()
+            local parse_ok, cur_data = pcall(vim.fn.json_decode, content)
+            if parse_ok and type(cur_data) == "table" then hosts_data = cur_data end
+          end
+          
+          hosts_data["github.com"] = hosts_data["github.com"] or {}
+          hosts_data["github.com"].user = "copilot_user" 
+          hosts_data["github.com"].oauth_token = parsed.access_token
+          
+          local f_out = io.open(hosts_file, "w")
+          if f_out then
+            f_out:write(vim.fn.json_encode(hosts_data))
+            f_out:close()
+          end
+          
+          on_chunk("\n✅ **Success!** You are now logged into GitHub Copilot. Please hit Enter to run your prompt again!\n")
+          if on_done then on_done() end
+        elseif parsed.error == "authorization_pending" then
+          -- User hasn't finished typing the code, keep checking
+          vim.defer_fn(function() poll_for_token(device_code, interval, max_attempts - 1, on_chunk, on_done) end, interval * 1000)
+        elseif parsed.error == "slow_down" then
+          -- GitHub says we're polling too fast, back off
+          vim.defer_fn(function() poll_for_token(device_code, interval + 5, max_attempts - 1, on_chunk, on_done) end, (interval + 5) * 1000)
+        elseif parsed.error == "expired_token" then
+          on_chunk("\n⚠️ **Error**: The device code expired. Please run the chat again to get a new code.\n")
+          if on_done then on_done() end
+        else
+          -- Unknown error
+          on_chunk("\n⚠️ **Error**: " .. (parsed.error_description or parsed.error or "Unknown error occurred.") .. "\n")
+          if on_done then on_done() end
+        end
+      else
+        -- If JSON failed to parse for some reason, just retry
+        vim.defer_fn(function() poll_for_token(device_code, interval, max_attempts - 1, on_chunk, on_done) end, interval * 1000)
+      end
+    end
+  })
+end
+
 --- Start the GitHub Device OAuth Flow to get an access token
 --- @param on_chunk function
 --- @param on_done function
@@ -74,8 +151,10 @@ local function auth_device_flow(on_chunk, on_done)
     on_chunk("⚠️ **No Copilot token found!** Initiating login sequence...\n\n")
     on_chunk("Please open: " .. parsed.verification_uri .. "\n")
     on_chunk("And enter the code: **" .. parsed.user_code .. "**\n\n")
-    on_chunk("*(Note: For this test plugin, we stop here. In a full plugin, this would poll for the token and save it to `hosts.json`!)*\n")
-    if on_done then on_done() end
+    on_chunk("*(Waiting for you to authorize in your browser...)*\n")
+    
+    local interval = parsed.interval or 5
+    poll_for_token(parsed.device_code, interval, 40, on_chunk, on_done)
   else
     on_chunk("⚠️ **Error**: Failed to contact GitHub for authentication.\n")
     if on_done then on_done() end
