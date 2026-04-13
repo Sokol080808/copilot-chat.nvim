@@ -82,8 +82,10 @@ Token discovery order:
 If no token is found, the plugin automatically opens a terminal split and starts:
 
 ```bash
-gh auth login -h github.com -s models:read -w
+gh auth login -h github.com -w
 ```
+
+If the returned GitHub CLI token does not have Models access, create a PAT with `models` scope and export it as `GITHUB_TOKEN`.
 
 You can also run this manually from Neovim:
 

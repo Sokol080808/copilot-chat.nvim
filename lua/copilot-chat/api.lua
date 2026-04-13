@@ -78,18 +78,20 @@ end
 --- @param on_done function
 function M.login(on_chunk, on_done)
   if vim.fn.executable("gh") ~= 1 then
-    on_chunk("⚠️ **GitHub CLI not found**: install `gh` and run `gh auth login -h github.com -s models:read -w`.\n")
+    on_chunk("⚠️ **GitHub CLI not found**: install `gh` and run `gh auth login -h github.com -w`.\n")
     on_chunk("Or set `GITHUB_TOKEN` manually with `models` scope.\n")
+    on_chunk("Create token: https://github.com/settings/tokens\n")
     if on_done then on_done() end
     return
   end
 
   on_chunk("🔐 **Authentication required**. Opening terminal login flow...\n")
   on_chunk("Complete login in the terminal split, then submit your prompt again.\n")
+  on_chunk("If chat still fails, create a PAT with `models` scope and export `GITHUB_TOKEN`.\n")
 
   vim.schedule(function()
     vim.cmd("botright 12split")
-    vim.cmd("terminal gh auth login -h github.com -s models:read -w")
+    vim.cmd("terminal gh auth login -h github.com -w")
   end)
 
   if on_done then on_done() end
@@ -162,6 +164,12 @@ function M.stream_response(prompt, on_chunk, on_done)
             if ok and parsed then
               if parsed.error then
                 on_chunk("\n⚠️ **API Error**: " .. vim.fn.json_encode(parsed.error) .. "\n")
+                on_chunk("Hint: GitHub Models requires a token with `models` scope.\n")
+                on_chunk("Create one: https://github.com/settings/tokens\n")
+                on_chunk("Then export it: `export GITHUB_TOKEN=...`\n")
+                on_chunk("Hint: GitHub Models requires a token with `models` scope.\n")
+                on_chunk("Create one: https://github.com/settings/tokens\n")
+                on_chunk("Then export it: `export GITHUB_TOKEN=...`\n")
               else
                 local text = extract_text_from_event(parsed)
                 if text and text ~= "" then
