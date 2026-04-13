@@ -102,7 +102,7 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
           table.insert(highlights, { #combined_lines - 1, "DiffAdd" })
         end
 
-        last_new = start_new + count_new
+        last_new = math.max(last_new, start_new + count_new)
       end
 
       while last_new <= #new_lines do
