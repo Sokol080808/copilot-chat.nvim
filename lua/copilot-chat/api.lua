@@ -222,9 +222,9 @@ function M.stream_response(prompt, on_chunk, on_done)
                 on_chunk(parsed.choices[1].delta.content)
               end
             end
-          elseif line:match("{") then
-            -- Fallback: print raw non-data json
-            on_chunk("\n⚠️ **Raw Debug**: `" .. line .. "`\n")
+          else
+            -- ⚠️ ALWAYS print any non-chunk line literally to the screen so we can see if it's a 401 HTML page or plain text error!
+            on_chunk("\n`" .. line .. "`\n")
           end
         end
       end
