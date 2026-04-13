@@ -11,3 +11,7 @@ end, {})
 vim.api.nvim_create_user_command("CopilotChatLogin", function()
   require("copilot-chat").login()
 end, {})
+
+vim.api.nvim_create_user_command("CopilotChatAsk", function()
+  require("copilot-chat").ask()
+end, {})

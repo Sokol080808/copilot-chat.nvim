@@ -27,6 +27,39 @@ function M.open()
   ensure_chat_history()
 end
 
+local function submit_prompt(prompt)
+  if not prompt or prompt:match("^%s*$") then
+    return
+  end
+
+  ui.append_to_chat({ "", "### You", "" })
+  ui.append_to_chat(vim.split(prompt, "\n", { plain = true }))
+  table.insert(M.history, { role = "user", content = prompt })
+
+  ui.append_to_chat({ "", "### Copilot", "" })
+
+  local assistant_text = ""
+  api.stream_response(M.history, function(chunk)
+    assistant_text = assistant_text .. chunk
+    ui.stream_to_chat(chunk)
+  end, function(final_text)
+    if final_text and final_text ~= "" then
+      assistant_text = final_text
+    end
+    if assistant_text ~= "" then
+      table.insert(M.history, { role = "assistant", content = assistant_text })
+    end
+    ui.append_to_chat({ "", "---", "" })
+  end)
+end
+
+function M.ask()
+  ensure_chat_history()
+  ui.prompt_input(function(prompt)
+    submit_prompt(prompt)
+  end)
+end
+
 --- Start GitHub account login flow for GitHub Models access
 function M.login()
   ui.open()
@@ -40,39 +73,7 @@ end
 
 --- Submit the current prompt from the input buffer
 function M.submit()
-  ensure_chat_history()
-
-  local lines = ui.get_input_content()
-  
-  -- Filter empty lines (optional, just to keep it clean)
-  local prompt = table.concat(lines, "\n")
-  if prompt:match("^%s*$") then
-    return -- Empty prompt
-  end
-
-  -- 1. Display User Message
-  ui.append_to_chat({ "", "### You", "" })
-  ui.append_to_chat(lines)
-  table.insert(M.history, { role = "user", content = prompt })
-  
-  -- 2. Clear input
-  ui.clear_input()
-
-  -- 3. Connect to API and Stream Response
-  ui.append_to_chat({ "", "### Copilot", "" })
-
-  local assistant_text = ""
-  api.stream_response(M.history, function(chunk)
-    ui.stream_to_chat(chunk)
-  end, function(final_text)
-    if final_text and final_text ~= "" then
-      assistant_text = final_text
-    end
-    if assistant_text ~= "" then
-      table.insert(M.history, { role = "assistant", content = assistant_text })
-    end
-    ui.append_to_chat({ "", "---", "" }) -- Add a separator when done
-  end)
+  M.ask()
 end
 
 return M

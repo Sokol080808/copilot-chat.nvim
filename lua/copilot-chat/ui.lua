@@ -9,9 +9,9 @@ local M = {
 
 --- Open the Copilot Chat UI
 function M.open()
-  -- If already open, just go to the input window
+  -- If already open, focus chat window
   if M.chat_win and api.nvim_win_is_valid(M.chat_win) then
-    api.nvim_set_current_win(M.input_win)
+    api.nvim_set_current_win(M.chat_win)
     return
   end
 
@@ -22,35 +22,30 @@ function M.open()
   api.nvim_set_option_value("swapfile", false, { buf = M.chat_buf })
   -- api.nvim_buf_set_name(M.chat_buf, "CopilotChat-Feed") -- Naming can sometimes conflict, keep it simple for now
 
-  -- 2. Create the Input buffer
-  M.input_buf = api.nvim_create_buf(false, true)
-  api.nvim_set_option_value("filetype", "markdown", { buf = M.input_buf })
-  api.nvim_set_option_value("buftype", "nofile", { buf = M.input_buf })
-  api.nvim_set_option_value("swapfile", false, { buf = M.input_buf })
-
-  -- 3. Create the layout: Vertical split on the right
+  -- 2. Create the layout: Vertical split on the right
   vim.cmd("botright vsplit")
   M.chat_win = api.nvim_get_current_win()
   api.nvim_win_set_buf(M.chat_win, M.chat_buf)
-  api.nvim_win_set_width(M.chat_win, 50) -- 50 columns wide
+  api.nvim_win_set_width(M.chat_win, 60)
 
-  -- 4. Create the Input window: Horizontal split at the bottom
-  vim.cmd("botright split")
-  M.input_win = api.nvim_get_current_win()
-  api.nvim_win_set_buf(M.input_win, M.input_buf)
-  api.nvim_win_set_height(M.input_win, 6) -- 6 lines high
-
-  -- 5. Polish window options
+  -- 3. Polish window options
   api.nvim_set_option_value("wrap", true, { win = M.chat_win })
-  api.nvim_set_option_value("wrap", true, { win = M.input_win })
+  api.nvim_set_option_value("number", false, { win = M.chat_win })
+  api.nvim_set_option_value("relativenumber", false, { win = M.chat_win })
 
-  -- 6. Keymaps to submit
+  -- 4. Keymaps
   local opts = { noremap = true, silent = true }
-  api.nvim_buf_set_keymap(M.input_buf, "n", "<CR>", "<cmd>lua require('copilot-chat').submit()<CR>", opts)
-  api.nvim_buf_set_keymap(M.input_buf, "i", "<C-s>", "<cmd>lua require('copilot-chat').submit()<CR>", opts)
+  api.nvim_buf_set_keymap(M.chat_buf, "n", "<CR>", "<cmd>lua require('copilot-chat').ask()<CR>", opts)
+  api.nvim_buf_set_keymap(M.chat_buf, "n", "i", "<cmd>lua require('copilot-chat').ask()<CR>", opts)
+  api.nvim_buf_set_keymap(M.chat_buf, "n", "q", "<cmd>close<CR>", opts)
 
-  -- Start in insert mode
-  vim.cmd("startinsert")
+  M.append_to_chat({
+    "# Copilot Chat",
+    "",
+    "Press <Enter> to ask a question.",
+    "",
+    "---",
+  })
 end
 
 --- Append text to the chat buffer
@@ -77,13 +72,19 @@ function M.append_to_chat(lines)
 end
 
 function M.get_input_content()
-  if not M.input_buf or not api.nvim_buf_is_valid(M.input_buf) then return {} end
-  return api.nvim_buf_get_lines(M.input_buf, 0, -1, false)
+  return {}
 end
 
 function M.clear_input()
-  if not M.input_buf or not api.nvim_buf_is_valid(M.input_buf) then return end
-  api.nvim_buf_set_lines(M.input_buf, 0, -1, false, {""})
+  -- No-op in single-window mode
+end
+
+function M.prompt_input(on_submit)
+  vim.ui.input({ prompt = "Copilot > " }, function(input)
+    if input and input:gsub("%s+", "") ~= "" then
+      on_submit(input)
+    end
+  end)
 end
 
 --- Stream a chunk of text to the chat buffer
