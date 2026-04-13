@@ -34,15 +34,15 @@ function M.submit()
   
   -- 2. Clear input
   ui.clear_input()
-Streaming
+
+  -- 3. Connect to API and Stream Response
   ui.append_to_chat({ "", "### Copilot", "" })
   
   api.stream_response(prompt, function(chunk)
     ui.stream_to_chat(chunk)
   end, function()
     ui.append_to_chat({ "", "---", "" }) -- Add a separator when done
-  end
-  ui.append_to_chat({ "", "### Copilot", "", "I am a Neovim plugin trying to be an AI! You said:", "```text", prompt, "```" })
+  end)
 end
 
 return M
