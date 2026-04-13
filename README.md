@@ -24,7 +24,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
-    "username/copilot-chat.nvim",
+    "Sokol080808/copilot-chat.nvim",
     dependencies = {
         -- Future dependencies
     },
@@ -41,7 +41,7 @@ Using [packer.nvim](https://github.com/wbthomason/packer.nvim):
 
 ```lua
 use({
-    "username/copilot-chat.nvim",
+    "Sokol080808/copilot-chat.nvim",
     config = function()
         require("copilot-chat").setup()
     end,
