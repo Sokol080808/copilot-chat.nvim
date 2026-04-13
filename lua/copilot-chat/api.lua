@@ -219,6 +219,10 @@ function M.stream_response(prompt, on_chunk, on_done)
               on_chunk(parsed.choices[1].delta.content)
             end
           end
+        elseif line and line:match('{"error"') then
+          on_chunk("\n⚠️ **API Error**: " .. line .. "\n")
+        elseif line and line:match('{"message"') then
+          on_chunk("\n⚠️ **API Error**: " .. line .. "\n")
         end
       end
     end,
