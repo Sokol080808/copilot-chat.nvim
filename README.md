@@ -78,7 +78,7 @@ require("copilot-chat").setup({
 - [x] Real HTTP client integration using async `vim.fn.jobstart` and `curl`
 - [x] GitHub Copilot Token Discovery & API integration (`gpt-4o`)
 - [x] OAuth Device Flow for unauthenticated users
-- [ ] Implement polling for the OAuth code to auto-save tokens
+- [x] Implement polling for the OAuth code to auto-save tokens
 - [ ] Context gathering (current buffer text, visual selections)
 
 ## 🤝 Contributing
