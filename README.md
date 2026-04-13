@@ -70,6 +70,27 @@ use({
    - Press `<Enter>` in **Normal mode**
    - Press `<C-s>` in **Insert mode**
 
+### 🔐 Login Flow (Official)
+
+This plugin uses official GitHub Models authentication.
+
+Token discovery order:
+1. `GITHUB_TOKEN`
+2. `GH_TOKEN`
+3. `gh auth token` (from GitHub CLI login)
+
+If no token is found, the plugin automatically opens a terminal split and starts:
+
+```bash
+gh auth login -h github.com -s models:read -w
+```
+
+You can also run this manually from Neovim:
+
+```vim
+:CopilotChatLogin
+```
+
 ## 🛠️ Configuration
 
 You can configure the plugin by passing a table to the `setup` function. The table is currently empty but will support API configuration and window sizing in the future.

@@ -72,6 +72,29 @@ local function get_models_token()
   return nil
 end
 
+--- Start official GitHub authentication using GitHub CLI.
+--- This uses documented account auth and then reuses `gh auth token`.
+--- @param on_chunk function
+--- @param on_done function
+function M.login(on_chunk, on_done)
+  if vim.fn.executable("gh") ~= 1 then
+    on_chunk("⚠️ **GitHub CLI not found**: install `gh` and run `gh auth login -h github.com -s models:read -w`.\n")
+    on_chunk("Or set `GITHUB_TOKEN` manually with `models` scope.\n")
+    if on_done then on_done() end
+    return
+  end
+
+  on_chunk("🔐 **Authentication required**. Opening terminal login flow...\n")
+  on_chunk("Complete login in the terminal split, then submit your prompt again.\n")
+
+  vim.schedule(function()
+    vim.cmd("botright 12split")
+    vim.cmd("terminal gh auth login -h github.com -s models:read -w")
+  end)
+
+  if on_done then on_done() end
+end
+
 --- Fetch response from the official GitHub Models API.
 --- @param prompt string The user prompt
 --- @param on_chunk function Callback for each text chunk
@@ -79,10 +102,7 @@ end
 function M.stream_response(prompt, on_chunk, on_done)
   local token = get_models_token()
   if not token then
-    on_chunk("⚠️ **Missing token**: set `GITHUB_TOKEN` (or `GH_TOKEN`) with `models` scope.\n")
-    on_chunk("Create token: https://github.com/settings/tokens\n")
-    on_chunk("Then restart Neovim and try again.\n")
-    if on_done then on_done() end
+    M.login(on_chunk, on_done)
     return
   end
 

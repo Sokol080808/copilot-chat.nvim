@@ -18,6 +18,17 @@ function M.open()
   ui.open()
 end
 
+--- Start GitHub account login flow for GitHub Models access
+function M.login()
+  ui.open()
+  ui.append_to_chat({ "", "### Copilot", "" })
+  api.login(function(chunk)
+    ui.stream_to_chat(chunk)
+  end, function()
+    ui.append_to_chat({ "", "---", "" })
+  end)
+end
+
 --- Submit the current prompt from the input buffer
 function M.submit()
   local lines = ui.get_input_content()
