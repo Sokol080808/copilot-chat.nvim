@@ -11,13 +11,6 @@ M.config = {
 
 M.history = {}
 
-local function ensure_diff_highlights()
-  -- Strong fallback colors so diff remains visible regardless of colorscheme/plugins.
-  vim.api.nvim_set_hl(0, "CopilotChatDiffAdd", { fg = "#b8f2c8", bg = "#10321f", default = false })
-  vim.api.nvim_set_hl(0, "CopilotChatDiffDelete", { fg = "#ffd1d1", bg = "#3a1414", default = false })
-  vim.api.nvim_set_hl(0, "CopilotChatDiffChange", { fg = "#ffe7b3", bg = "#3a2f0f", default = false })
-end
-
 local function ensure_chat_history()
   if #M.history == 0 then
     table.insert(M.history, { role = "system", content = M.config.system_prompt })
@@ -71,10 +64,7 @@ local function apply_to_source_buffer(source_buf, code)
   return true, vim.api.nvim_buf_get_name(source_buf)
 end
 
-local function show_diff_preview(old_text, new_text)
-  local api = vim.api
-  ensure_diff_highlights()
-
+local function build_diff_preview(old_text, new_text)
   local ok, diff = pcall(vim.diff, old_text, new_text, {
     result_type = "unified",
     ctxlen = 3,
@@ -85,55 +75,16 @@ local function show_diff_preview(old_text, new_text)
   elseif not diff or diff == "" then
     diff = "No differences detected."
   end
-
-  -- Keep preview anchored to the bottom to avoid centered/floating placement by window plugins.
-  vim.cmd("botright 18split")
-  vim.cmd("enew")
-  local preview_win = api.nvim_get_current_win()
-  local preview_buf = api.nvim_get_current_buf()
-
-  api.nvim_set_option_value("buftype", "nofile", { buf = preview_buf })
-  api.nvim_set_option_value("bufhidden", "wipe", { buf = preview_buf })
-  api.nvim_set_option_value("swapfile", false, { buf = preview_buf })
-  api.nvim_set_option_value("filetype", "diff", { buf = preview_buf })
-  api.nvim_set_option_value("winfixheight", true, { win = preview_win })
-  api.nvim_set_option_value("cursorline", false, { win = preview_win })
-  api.nvim_set_option_value("modifiable", true, { buf = preview_buf })
-  local lines = vim.split(diff, "\n", { plain = true })
-  api.nvim_buf_set_lines(preview_buf, 0, -1, false, lines)
-
-  -- Add explicit highlights so diff colors appear even if syntax highlighting is disabled.
-  for i, line in ipairs(lines) do
-    local lnum = i - 1
-    if vim.startswith(line, "@@") then
-      api.nvim_buf_add_highlight(preview_buf, -1, "CopilotChatDiffChange", lnum, 0, -1)
-    elseif vim.startswith(line, "+") and not vim.startswith(line, "+++") then
-      api.nvim_buf_add_highlight(preview_buf, -1, "CopilotChatDiffAdd", lnum, 0, -1)
-    elseif vim.startswith(line, "-") and not vim.startswith(line, "---") then
-      api.nvim_buf_add_highlight(preview_buf, -1, "CopilotChatDiffDelete", lnum, 0, -1)
-    end
-  end
-
-  api.nvim_set_option_value("modifiable", false, { buf = preview_buf })
-
-  local close_preview = function()
-    if preview_win and api.nvim_win_is_valid(preview_win) then
-      api.nvim_win_close(preview_win, true)
-    end
-  end
-
-  return close_preview
+  return diff
 end
 
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
   local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
 
   vim.schedule(function()
-    local close_preview = show_diff_preview(old_text, new_code)
+    local diff = build_diff_preview(old_text, new_code)
+    ui.append_diff_preview(diff)
     vim.ui.select({ "Apply", "Skip" }, { prompt = "Apply Copilot changes to current file?" }, function(choice)
-      if close_preview then
-        close_preview()
-      end
       if choice == "Apply" then
         on_apply()
       else
