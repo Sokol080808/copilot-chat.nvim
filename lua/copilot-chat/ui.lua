@@ -46,32 +46,11 @@ function M.open()
 
   M.append_to_chat({
     "# Copilot Chat",
-    "Usage: loading...",
     "",
     "Press <Enter> to ask a question.",
     "",
     "---",
   })
-end
-
-function M.set_usage_status(text)
-  if not M.chat_buf or not api.nvim_buf_is_valid(M.chat_buf) then
-    return
-  end
-
-  api.nvim_set_option_value("modifiable", true, { buf = M.chat_buf })
-  local lines = api.nvim_buf_get_lines(M.chat_buf, 0, -1, false)
-
-  if #lines == 0 then
-    lines = { "# Copilot Chat", "Usage: " .. text, "" }
-  elseif #lines == 1 then
-    table.insert(lines, "Usage: " .. text)
-  else
-    lines[2] = "Usage: " .. text
-  end
-
-  api.nvim_buf_set_lines(M.chat_buf, 0, -1, false, lines)
-  api.nvim_set_option_value("modifiable", false, { buf = M.chat_buf })
 end
 
 --- Append text to the chat buffer

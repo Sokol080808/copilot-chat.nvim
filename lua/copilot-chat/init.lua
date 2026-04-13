@@ -17,21 +17,6 @@ local function ensure_chat_history()
   end
 end
 
-local function refresh_usage_status()
-  local usage, err = api.get_usage_limits()
-  if usage then
-    local text = (usage.remaining or "?") .. "/" .. (usage.limit or "?")
-    if usage.reset and usage.reset ~= "" then
-      text = text .. " requests left (reset: " .. usage.reset .. ")"
-    else
-      text = text .. " requests left"
-    end
-    ui.set_usage_status(text)
-  else
-    ui.set_usage_status("unavailable" .. (err and (" - " .. err) or ""))
-  end
-end
-
 local function should_auto_apply(prompt)
   if not M.config.auto_apply_edits then
     return false
@@ -150,7 +135,6 @@ end
 function M.open()
   ui.open()
   ensure_chat_history()
-  refresh_usage_status()
 end
 
 local function submit_prompt(prompt)
@@ -213,15 +197,8 @@ local function submit_prompt(prompt)
       end
     end
 
-    refresh_usage_status()
     ui.append_to_chat({ "", "---", "" })
   end)
-end
-
-function M.usage()
-  ui.open()
-  refresh_usage_status()
-  ui.append_to_chat({ "", "Refreshed usage limits.", "---" })
 end
 
 function M.ask()

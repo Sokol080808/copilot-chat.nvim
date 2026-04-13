@@ -67,63 +67,6 @@ local function get_models_token()
   return nil
 end
 
-local function parse_header_value(headers, key)
-  local key_lower = key:lower()
-  for _, line in ipairs(headers) do
-    local lower = line:lower()
-    if lower:find("^" .. key_lower .. ":", 1, false) then
-      return line:gsub("^[^:]+:%s*", "")
-    end
-  end
-  return nil
-end
-
-function M.get_usage_limits()
-  local token = get_models_token()
-  if not token then
-    return nil, "not authenticated"
-  end
-
-  local payload = {
-    model = INTENT_MODEL,
-    messages = {
-      { role = "user", content = "ping" },
-    },
-    stream = false,
-    max_tokens = 1,
-  }
-
-  local cmd = {
-    "curl",
-    "-s", "-L", "-D", "-", "-o", "/dev/null", "-X", "POST",
-    "https://models.github.ai/inference/chat/completions",
-    "-H", "Accept: application/vnd.github+json",
-    "-H", "Authorization: Bearer " .. token,
-    "-H", "X-GitHub-Api-Version: 2022-11-28",
-    "-H", "Content-Type: application/json",
-    "-d", vim.fn.json_encode(payload),
-  }
-
-  local output = vim.fn.systemlist(cmd)
-  if vim.v.shell_error ~= 0 or not output then
-    return nil, "usage check failed"
-  end
-
-  local remaining = parse_header_value(output, "x-ratelimit-remaining")
-  local limit = parse_header_value(output, "x-ratelimit-limit")
-  local reset = parse_header_value(output, "x-ratelimit-reset")
-
-  if not remaining and not limit then
-    return nil, "rate-limit headers unavailable"
-  end
-
-  return {
-    remaining = remaining,
-    limit = limit,
-    reset = reset,
-  }, nil
-end
-
 local function extract_message_content(parsed)
   local choice = parsed and parsed.choices and parsed.choices[1]
   if not choice or type(choice.message) ~= "table" then

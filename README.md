@@ -12,7 +12,6 @@ A Neovim plugin that brings a VS Code-like Copilot Chat interface to your favori
 * **Single-Window Chat UI**: Clean right-side chat window with prompt input popups (no bottom split).
 * **Multi-Turn Conversation Memory**: Keeps chat history and sends full context on each turn.
 * **Live Token Streaming**: Real-time token-by-token streaming of the AI's response without blocking your editor.
-* **Usage Limits in Header**: Shows current API rate-limit usage above the chat.
 * **Auto-Apply File Edits**: Can apply model-generated file changes with diff preview + confirmation.
 * **Neural Edit Intent Detection**: Uses a model to decide whether your prompt is an edit request.
 * **Markdown Support**: Chat history renders with Neovim's native Markdown highlighting.
@@ -133,7 +132,6 @@ When a prompt is classified as an edit request:
 - [x] Real HTTP client integration using async `vim.fn.jobstart` and `curl`
 - [x] Official GitHub Models API integration (`openai/gpt-4o`)
 - [x] Token discovery from `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`
-- [x] Usage limits header in chat
 - [x] Auto-apply with diff preview and confirmation
 - [ ] Context gathering (current buffer text, visual selections)
 
