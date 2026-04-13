@@ -64,6 +64,19 @@ local function apply_to_source_buffer(source_buf, code)
   return true, vim.api.nvim_buf_get_name(source_buf)
 end
 
+local function classify_hunk(change_old_count, change_new_count)
+  if change_old_count > 0 and change_new_count > 0 then
+    return "change"
+  end
+  if change_old_count > 0 then
+    return "delete"
+  end
+  if change_new_count > 0 then
+    return "add"
+  end
+  return "none"
+end
+
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
   vim.schedule(function()
     local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
@@ -119,10 +132,8 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
           table.insert(highlights, { #combined_lines - 1, "DiffDelete" })
         end
 
-        local new_hl = "DiffAdd"
-        if change_old_count > 0 and change_new_count > 0 then
-          new_hl = "DiffChange"
-        end
+        local hunk_type = classify_hunk(change_old_count, change_new_count)
+        local new_hl = hunk_type == "change" and "DiffChange" or "DiffAdd"
 
         for i = 0, change_new_count - 1 do
           table.insert(combined_lines, new_lines[change_new_start + i])
