@@ -22,12 +22,7 @@ local function should_auto_apply(prompt)
     return false
   end
 
-  local p = prompt:lower()
-  return p:find("implement", 1, true)
-    or p:find("fix", 1, true)
-    or p:find("refactor", 1, true)
-    or p:find("update", 1, true)
-    or p:find("rewrite", 1, true)
+  return api.detect_edit_intent(prompt)
 end
 
 local function extract_code_block(text)

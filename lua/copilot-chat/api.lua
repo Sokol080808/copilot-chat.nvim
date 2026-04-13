@@ -1,6 +1,7 @@
 local M = {}
 
 local DEFAULT_MODEL = "openai/gpt-4o"
+local INTENT_MODEL = "openai/gpt-4o-mini"
 
 local function extract_text_from_event(parsed)
   if type(parsed) ~= "table" then
@@ -64,6 +65,90 @@ local function get_models_token()
   end
 
   return nil
+end
+
+local function extract_message_content(parsed)
+  local choice = parsed and parsed.choices and parsed.choices[1]
+  if not choice or type(choice.message) ~= "table" then
+    return nil
+  end
+
+  local content = choice.message.content
+  if type(content) == "string" then
+    return content
+  end
+
+  if type(content) == "table" then
+    local out = {}
+    for _, part in ipairs(content) do
+      if type(part) == "string" then
+        table.insert(out, part)
+      elseif type(part) == "table" and type(part.text) == "string" then
+        table.insert(out, part.text)
+      end
+    end
+    if #out > 0 then
+      return table.concat(out)
+    end
+  end
+
+  return nil
+end
+
+function M.detect_edit_intent(prompt)
+  local token = get_models_token()
+  if not token then
+    return false
+  end
+
+  local payload = {
+    model = INTENT_MODEL,
+    messages = {
+      {
+        role = "system",
+        content = "Classify whether the user asks to modify the currently open file. Reply with strict JSON only: {\"apply\":true} or {\"apply\":false}.",
+      },
+      {
+        role = "user",
+        content = prompt,
+      },
+    },
+    stream = false,
+    temperature = 0,
+  }
+
+  local cmd = {
+    "curl",
+    "-s", "-L", "-X", "POST",
+    "https://models.github.ai/inference/chat/completions",
+    "-H", "Accept: application/vnd.github+json",
+    "-H", "Authorization: Bearer " .. token,
+    "-H", "X-GitHub-Api-Version: 2022-11-28",
+    "-H", "Content-Type: application/json",
+    "-d", vim.fn.json_encode(payload),
+  }
+
+  local out = vim.fn.system(cmd)
+  if vim.v.shell_error ~= 0 or not out or out == "" then
+    return false
+  end
+
+  local ok, parsed = pcall(vim.fn.json_decode, out)
+  if not ok or not parsed or parsed.error then
+    return false
+  end
+
+  local content = extract_message_content(parsed)
+  if not content then
+    return false
+  end
+
+  local json_ok, verdict = pcall(vim.fn.json_decode, content)
+  if json_ok and type(verdict) == "table" and type(verdict.apply) == "boolean" then
+    return verdict.apply
+  end
+
+  return content:lower():find("true", 1, true) ~= nil
 end
 
 function M.login(on_chunk, on_done)
