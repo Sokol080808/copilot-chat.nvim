@@ -9,8 +9,12 @@ A Neovim plugin that brings a VS Code-like Copilot Chat interface to your favori
 ## ✨ Features
 
 * **Official GitHub Models API**: Uses the documented `https://models.github.ai/inference/chat/completions` endpoint.
-* **VS Code-like UI**: A familiar vertical split for chat history and an integrated prompt input buffer.
+* **Single-Window Chat UI**: Clean right-side chat window with prompt input popups (no bottom split).
+* **Multi-Turn Conversation Memory**: Keeps chat history and sends full context on each turn.
 * **Live Token Streaming**: Real-time token-by-token streaming of the AI's response without blocking your editor.
+* **Usage Limits in Header**: Shows current API rate-limit usage above the chat.
+* **Auto-Apply File Edits**: Can apply model-generated file changes with diff preview + confirmation.
+* **Neural Edit Intent Detection**: Uses a model to decide whether your prompt is an edit request.
 * **Markdown Support**: Chat history renders with Neovim's native Markdown highlighting.
 * **Native Lua**: Written entirely in Lua using Neovim's modern API and `curl`.
 
@@ -65,10 +69,18 @@ use({
    ```vim
    :CopilotChat
    ```
-2. Type your prompt in the bottom input buffer.
-3. Submit your prompt:
-   - Press `<Enter>` in **Normal mode**
-   - Press `<C-s>` in **Insert mode**
+2. Ask a question:
+    - Press `<Enter>` in the chat window
+    - or run `:CopilotChatAsk`
+3. Type your prompt in the `Copilot >` input popup and submit.
+
+### Commands
+
+```vim
+:CopilotChat        " Open chat window
+:CopilotChatAsk     " Ask a new question
+:CopilotChatLogin   " Start GitHub login flow
+```
 
 ### 🔐 Login Flow (Official)
 
@@ -95,23 +107,34 @@ You can also run this manually from Neovim:
 
 ## 🛠️ Configuration
 
-You can configure the plugin by passing a table to the `setup` function. The table is currently empty but will support API configuration and window sizing in the future.
+You can configure the plugin by passing a table to `setup`.
 
 ```lua
 require("copilot-chat").setup({
-    -- Future options:
-    -- window_width = 50,
-    -- model = "gpt-4o",
+    system_prompt = "You are an AI programming assistant integrated into a Neovim editor.",
+    auto_apply_edits = true,   -- Enable model-driven file edit mode
+    auto_apply_confirm = true, -- Show diff + ask before applying
 })
 ```
 
+### Auto-Apply Workflow
+
+When a prompt is classified as an edit request:
+
+1. The model receives the current source file content.
+2. It returns one fenced code block with updated file content.
+3. The plugin shows a diff preview.
+4. You choose `Apply` or `Skip`.
+
 ## 🗺️ Roadmap
 
-- [x] Basic split window UI and layout
-- [x] Input buffer with submit keymaps
+- [x] Single-window chat UI with prompt input
+- [x] Multi-turn chat memory
 - [x] Real HTTP client integration using async `vim.fn.jobstart` and `curl`
 - [x] Official GitHub Models API integration (`openai/gpt-4o`)
 - [x] Token discovery from `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`
+- [x] Usage limits header in chat
+- [x] Auto-apply with diff preview and confirmation
 - [ ] Context gathering (current buffer text, visual selections)
 
 ## 🤝 Contributing
