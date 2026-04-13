@@ -166,6 +166,7 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
     vim.ui.select({ "Apply", "Skip" }, { prompt = "Keep these Copilot changes?" }, function(choice)
       vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
       if choice == "Apply" then
+        vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
         on_apply()
       else
         vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, old_lines)
