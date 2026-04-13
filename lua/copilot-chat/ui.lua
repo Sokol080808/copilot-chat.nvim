@@ -92,44 +92,6 @@ function M.prompt_input(on_submit)
   end)
 end
 
-local diff_ns = api.nvim_create_namespace("CopilotChatDiff")
-
-
-function M.append_diff_preview(diff_text)
-  if not M.chat_buf or not api.nvim_buf_is_valid(M.chat_buf) then
-    return
-  end
-
-  local diff_lines = vim.split(diff_text, "\n", { plain = true })
-  local header = { "", "### Diff Preview", "```diff" }
-  local footer = { "```", "" }
-
-  api.nvim_set_option_value("modifiable", true, { buf = M.chat_buf })
-  local start_line = api.nvim_buf_line_count(M.chat_buf)
-  api.nvim_buf_set_lines(M.chat_buf, start_line, start_line, false, header)
-  local diff_start = api.nvim_buf_line_count(M.chat_buf)
-  api.nvim_buf_set_lines(M.chat_buf, diff_start, diff_start, false, diff_lines)
-  local diff_end = api.nvim_buf_line_count(M.chat_buf) - 1
-  api.nvim_buf_set_lines(M.chat_buf, diff_end + 1, diff_end + 1, false, footer)
-  api.nvim_set_option_value("modifiable", false, { buf = M.chat_buf })
-
-  for i, line in ipairs(diff_lines) do
-    local lnum = diff_start + i - 1
-    if vim.startswith(line, "@@") then
-      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "DiffChange", lnum, 0, -1)
-    elseif vim.startswith(line, "+") and not vim.startswith(line, "+++") then
-      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "DiffAdd", lnum, 0, -1)
-    elseif vim.startswith(line, "-") and not vim.startswith(line, "---") then
-      api.nvim_buf_add_highlight(M.chat_buf, diff_ns, "DiffDelete", lnum, 0, -1)
-    end
-  end
-
-  if M.chat_win and api.nvim_win_is_valid(M.chat_win) then
-    local line_count = api.nvim_buf_line_count(M.chat_buf)
-    api.nvim_win_set_cursor(M.chat_win, { line_count, 0 })
-  end
-end
-
 function M.get_source_buf()
   if M.source_buf and api.nvim_buf_is_valid(M.source_buf) and M.source_buf ~= M.chat_buf then
     return M.source_buf

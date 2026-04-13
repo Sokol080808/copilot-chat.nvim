@@ -79,30 +79,57 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
       local combined_lines = {}
       local highlights = {}
       local last_new = 1
-      local last_old = 1
 
       for _, hunk in ipairs(indices) do
         local start_old, count_old = hunk[1], hunk[2]
         local start_new, count_new = hunk[3], hunk[4]
 
-        local insert_up_to = count_new == 0 and start_new or (start_new - 1)
+        local prefix = 0
+        while prefix < count_old and prefix < count_new do
+          if old_lines[start_old + prefix] ~= new_lines[start_new + prefix] then
+            break
+          end
+          prefix = prefix + 1
+        end
+
+        local suffix = 0
+        while suffix < (count_old - prefix) and suffix < (count_new - prefix) do
+          local old_idx = start_old + count_old - 1 - suffix
+          local new_idx = start_new + count_new - 1 - suffix
+          if old_lines[old_idx] ~= new_lines[new_idx] then
+            break
+          end
+          suffix = suffix + 1
+        end
+
+        local change_old_start = start_old + prefix
+        local change_new_start = start_new + prefix
+        local change_old_count = count_old - prefix - suffix
+        local change_new_count = count_new - prefix - suffix
+
+        local insert_up_to = count_new == 0 and (start_new + prefix) or (start_new + prefix - 1)
 
         while last_new <= insert_up_to do
           table.insert(combined_lines, new_lines[last_new])
           last_new = last_new + 1
         end
 
-        for i = 0, count_old - 1 do
-          table.insert(combined_lines, old_lines[start_old + i])
+        for i = 0, change_old_count - 1 do
+          table.insert(combined_lines, old_lines[change_old_start + i])
           table.insert(highlights, { #combined_lines - 1, "DiffDelete" })
         end
 
-        for i = 0, count_new - 1 do
-          table.insert(combined_lines, new_lines[start_new + i])
-          table.insert(highlights, { #combined_lines - 1, "DiffAdd" })
+        local new_hl = "DiffAdd"
+        if change_old_count > 0 and change_new_count > 0 then
+          new_hl = "DiffChange"
         end
 
-        last_new = math.max(last_new, start_new + count_new)
+        for i = 0, change_new_count - 1 do
+          table.insert(combined_lines, new_lines[change_new_start + i])
+          table.insert(highlights, { #combined_lines - 1, new_hl })
+        end
+
+        last_new = math.max(last_new, change_new_start + change_new_count)
       end
 
       while last_new <= #new_lines do
@@ -125,7 +152,6 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
     vim.ui.select({ "Apply", "Skip" }, { prompt = "Keep these Copilot changes?" }, function(choice)
       vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
       if choice == "Apply" then
-        vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
         on_apply()
       else
         vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, old_lines)
@@ -205,12 +231,16 @@ local function submit_prompt(prompt)
         if not source_buf then
           ui.append_to_chat({ "", "⚠️ Auto-apply failed: " .. err })
         else
-          local apply = function()
-            local ok, info = apply_to_source_buffer(source_buf, code)
-            if ok then
-              ui.append_to_chat({ "", "Applied changes to: " .. info })
+          local apply = function(already_applied)
+            if already_applied then
+              ui.append_to_chat({ "", "Applied changes to: " .. vim.api.nvim_buf_get_name(source_buf) })
             else
-              ui.append_to_chat({ "", "⚠️ Auto-apply failed: " .. info })
+              local ok, info = apply_to_source_buffer(source_buf, code)
+              if ok then
+                ui.append_to_chat({ "", "Applied changes to: " .. info })
+              else
+                ui.append_to_chat({ "", "⚠️ Auto-apply failed: " .. info })
+              end
             end
             ui.append_to_chat({ "", "---", "" })
           end
@@ -221,11 +251,13 @@ local function submit_prompt(prompt)
           end
 
           if M.config.auto_apply_confirm then
-            with_apply_confirmation(source_buf, code, apply, skip)
+            with_apply_confirmation(source_buf, code, function()
+              apply(true)
+            end, skip)
             return
           end
 
-          apply()
+          apply(false)
         end
       else
         ui.append_to_chat({ "", "⚠️ Auto-apply skipped: model did not return a fenced code block." })
