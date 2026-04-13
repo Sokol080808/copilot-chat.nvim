@@ -12,7 +12,9 @@ A Neovim plugin that brings a VS Code-like Copilot Chat interface to your favori
 * **Single-Window Chat UI**: Clean right-side chat window with prompt input popups (no bottom split).
 * **Multi-Turn Conversation Memory**: Keeps chat history and sends full context on each turn.
 * **Live Token Streaming**: Real-time token-by-token streaming of the AI's response without blocking your editor.
-* **Auto-Apply File Edits**: Can apply model-generated file changes with diff preview + confirmation.
+* **Inline Source Diff Preview**: Previews edits directly in the target file buffer (not in chat).
+* **Native Diff Highlighting**: Uses `DiffAdd`, `DiffDelete`, and `DiffChange` line highlighting in preview.
+* **Auto-Apply File Edits**: Can apply model-generated file changes with preview + confirmation.
 * **Neural Edit Intent Detection**: Uses a model to decide whether your prompt is an edit request.
 * **Markdown Support**: Chat history renders with Neovim's native Markdown highlighting.
 * **Native Lua**: Written entirely in Lua using Neovim's modern API and `curl`.
@@ -123,8 +125,20 @@ When a prompt is classified as an edit request:
 
 1. The model receives the current source file content.
 2. It returns one fenced code block with updated file content.
-3. The plugin shows a diff preview.
+3. The plugin previews changes directly in the source buffer and highlights lines using native diff groups.
 4. You choose `Apply` or `Skip`.
+5. `Apply` writes only the final updated file content.
+6. `Skip` restores the original file content.
+
+### Diff Preview Semantics
+
+During confirmation preview:
+
+1. `DiffAdd`: newly added lines
+2. `DiffDelete`: deleted lines shown in preview context
+3. `DiffChange`: replacement edits (old text replaced by new text)
+
+The preview is temporary and exists only for confirmation.
 
 ## 🗺️ Roadmap
 
