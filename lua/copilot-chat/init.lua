@@ -24,13 +24,15 @@ local function should_auto_apply(prompt)
   end
 
   local source_buf = ui.get_source_buf()
-  local context = {
-    has_open_file = source_buf and vim.api.nvim_buf_is_valid(source_buf) and vim.bo[source_buf].buftype == "" or false,
-    file_path = source_buf and vim.api.nvim_buf_get_name(source_buf) or "",
-    filetype = source_buf and vim.bo[source_buf].filetype or "",
-  }
+  if not source_buf or not vim.api.nvim_buf_is_valid(source_buf) then
+    return false
+  end
 
-  return api.detect_edit_intent(prompt, context)
+  if vim.bo[source_buf].buftype ~= "" then
+    return false
+  end
+
+  return true
 end
 
 local function extract_code_block(text)
@@ -38,7 +40,7 @@ local function extract_code_block(text)
     return nil
   end
 
-  local _, _, body = text:find("```[%w%-_]*\n([%s%S]-)\n```")
+  local _, _, body = text:find("```UPDATE\n([%s%S]-)\n```")
   return body
 end
 
@@ -282,15 +284,17 @@ local function build_messages_for_request(prompt, auto_apply)
     return messages
   end
 
+  table.remove(messages)
+
   local path = vim.api.nvim_buf_get_name(source_buf)
   local content = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
   table.insert(messages, {
     role = "system",
-    content = "You are editing a file in-place. Return ONLY one fenced code block with the full updated file content. No explanations.",
+    content = "You are an AI programming assistant in Neovim.\nIf the user asks a general question, answer normally.\nIf the user asks you to modify/write/refactor the current file, output the COMPLETE updated file in a single fenced code block starting EXACTLY with ```UPDATE\n...content...\n```. Do not provide any other text.",
   })
   table.insert(messages, {
     role = "user",
-    content = "Target file: " .. path .. "\n\nCurrent file content:\n```\n" .. content .. "\n```\n\nRequested change: " .. prompt,
+    content = "Target file: " .. path .. "\n\nCurrent file content:\n```\n" .. content .. "\n```\n\nRequested change/question: " .. prompt,
   })
 
   return messages
