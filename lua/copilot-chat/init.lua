@@ -275,6 +275,7 @@ end
 
 local function build_messages_for_request(prompt, auto_apply)
   local messages = vim.deepcopy(M.history)
+
   if not auto_apply then
     return messages
   end
@@ -284,18 +285,18 @@ local function build_messages_for_request(prompt, auto_apply)
     return messages
   end
 
-  table.remove(messages)
-
+  -- Target file context only added to the *latest* user prompt
+  -- We don't want to re-inject full file history or system instructions repeatedly into the chat history.
   local path = vim.api.nvim_buf_get_name(source_buf)
   local content = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-  table.insert(messages, {
-    role = "system",
-    content = "You are an AI programming assistant in Neovim.\nIf the user asks a general question, answer normally.\nIf the user asks you to modify/write/refactor the current file, output the COMPLETE updated file in a single fenced code block starting EXACTLY with ```UPDATE\n...content...\n```. Do not provide any other text.",
-  })
-  table.insert(messages, {
-    role = "user",
-    content = "Target file: " .. path .. "\n\nCurrent file content:\n```\n" .. content .. "\n```\n\nRequested change/question: " .. prompt,
-  })
+  
+  local rule = "You are an AI programming assistant in Neovim.\nIf the user asks you to modify/write/refactor the current file, output the COMPLETE updated file in a single fenced code block starting EXACTLY with ```UPDATE\n...content...\n```. Do not provide any other text."
+  
+  -- The last message is the current prompt, replace its content
+  local last_idx = #messages
+  if messages[last_idx] and messages[last_idx].role == "user" then
+    messages[last_idx].content = rule .. "\n\nTarget file: " .. path .. "\n\nCurrent file content:\n```\n" .. content .. "\n```\n\nRequested change/question: " .. prompt
+  end
 
   return messages
 end
