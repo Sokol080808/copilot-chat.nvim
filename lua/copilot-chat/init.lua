@@ -87,6 +87,94 @@ local function get_buffer_window_width(buf)
   return vim.o.columns
 end
 
+local function render_preview_extmarks(source_buf, ns, old_lines, new_lines)
+  vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
+
+  local old_text = table.concat(old_lines, "\n")
+  local new_text = table.concat(new_lines, "\n")
+  local indices = vim.diff(old_text, new_text, { result_type = "indices" })
+  if not (indices and #indices > 0) then
+    return
+  end
+
+  local highlights = {}
+
+  for _, hunk in ipairs(indices) do
+    local start_old, count_old = hunk[1], hunk[2]
+    local start_new, count_new = hunk[3], hunk[4]
+
+    local prefix = 0
+    while prefix < count_old and prefix < count_new do
+      if old_lines[start_old + prefix] ~= new_lines[start_new + prefix] then
+        break
+      end
+      prefix = prefix + 1
+    end
+
+    local suffix = 0
+    while suffix < (count_old - prefix) and suffix < (count_new - prefix) do
+      local old_idx = start_old + count_old - 1 - suffix
+      local new_idx = start_new + count_new - 1 - suffix
+      if old_lines[old_idx] ~= new_lines[new_idx] then
+        break
+      end
+      suffix = suffix + 1
+    end
+
+    local change_old_start = start_old + prefix
+    local change_new_start = start_new + prefix
+    local change_old_count = count_old - prefix - suffix
+    local change_new_count = count_new - prefix - suffix
+
+    local hunk_type = classify_hunk(change_old_count, change_new_count)
+    if hunk_type == "add" then
+      for i = 0, change_new_count - 1 do
+        table.insert(highlights, { "line", change_new_start - 1 + i, "DiffAdd" })
+      end
+    elseif hunk_type == "change" then
+      for i = 0, change_new_count - 1 do
+        table.insert(highlights, { "line", change_new_start - 1 + i, "DiffChange" })
+      end
+    elseif hunk_type == "delete" then
+      local deleted_lines = {}
+      local win_width = get_buffer_window_width(source_buf)
+      for i = 0, change_old_count - 1 do
+        local text = old_lines[change_old_start + i] or ""
+        local pad = math.max(1, win_width - vim.fn.strdisplaywidth(text))
+        table.insert(deleted_lines, {
+          { text, "DiffDelete" },
+          { string.rep(" ", pad), "DiffDelete" },
+        })
+      end
+
+      local line_count = math.max(1, vim.api.nvim_buf_line_count(source_buf))
+      local attach_line = math.min(math.max(0, change_new_start), line_count - 1)
+      local above = change_new_start < line_count
+      if line_count == 1 and new_lines[1] == "" then
+        attach_line = 0
+        above = true
+      end
+
+      table.insert(highlights, { "virt", attach_line, deleted_lines, above })
+    end
+  end
+
+  for _, hl in ipairs(highlights) do
+    if hl[1] == "line" then
+      vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
+        line_hl_group = hl[3],
+        priority = 120,
+      })
+    else
+      vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
+        virt_lines = hl[3],
+        virt_lines_above = hl[4],
+        priority = 120,
+      })
+    end
+  end
+end
+
 local function clear_preview_state(state, restore_old)
   if not state then
     return
@@ -132,6 +220,20 @@ function M.skip_pending()
   state.on_skip()
 end
 
+function M.refresh_pending_preview()
+  local state = M.pending_confirmation
+  if not state then
+    return
+  end
+
+  if not (state.source_buf and vim.api.nvim_buf_is_valid(state.source_buf)) then
+    M.pending_confirmation = nil
+    return
+  end
+
+  render_preview_extmarks(state.source_buf, state.ns, state.old_lines, state.new_lines)
+end
+
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
   vim.schedule(function()
     if M.pending_confirmation then
@@ -139,7 +241,6 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
     end
 
     local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-    local indices = vim.diff(old_text, new_code, { result_type = "indices" })
 
     local old_lines = vim.split(old_text, "\n", { plain = true })
     local new_lines = vim.split(new_code, "\n", { plain = true })
@@ -150,84 +251,7 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
     -- Preview now shows only final file content.
     vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
 
-    if indices and #indices > 0 then
-      local highlights = {}
-
-      for _, hunk in ipairs(indices) do
-        local start_old, count_old = hunk[1], hunk[2]
-        local start_new, count_new = hunk[3], hunk[4]
-
-        local prefix = 0
-        while prefix < count_old and prefix < count_new do
-          if old_lines[start_old + prefix] ~= new_lines[start_new + prefix] then
-            break
-          end
-          prefix = prefix + 1
-        end
-
-        local suffix = 0
-        while suffix < (count_old - prefix) and suffix < (count_new - prefix) do
-          local old_idx = start_old + count_old - 1 - suffix
-          local new_idx = start_new + count_new - 1 - suffix
-          if old_lines[old_idx] ~= new_lines[new_idx] then
-            break
-          end
-          suffix = suffix + 1
-        end
-
-        local change_old_start = start_old + prefix
-        local change_new_start = start_new + prefix
-        local change_old_count = count_old - prefix - suffix
-        local change_new_count = count_new - prefix - suffix
-
-        local hunk_type = classify_hunk(change_old_count, change_new_count)
-        if hunk_type == "add" then
-          for i = 0, change_new_count - 1 do
-            table.insert(highlights, { "line", change_new_start - 1 + i, "DiffAdd" })
-          end
-        elseif hunk_type == "change" then
-          for i = 0, change_new_count - 1 do
-            table.insert(highlights, { "line", change_new_start - 1 + i, "DiffChange" })
-          end
-        elseif hunk_type == "delete" then
-          local deleted_lines = {}
-          local win_width = get_buffer_window_width(source_buf)
-          for i = 0, change_old_count - 1 do
-            local text = old_lines[change_old_start + i] or ""
-            local pad = math.max(1, win_width - vim.fn.strdisplaywidth(text))
-            table.insert(deleted_lines, {
-              { text, "DiffDelete" },
-              { string.rep(" ", pad), "DiffDelete" },
-            })
-          end
-
-          local line_count = math.max(1, vim.api.nvim_buf_line_count(source_buf))
-          local attach_line = math.min(math.max(0, change_new_start), line_count - 1)
-          local above = change_new_start < line_count
-          if line_count == 1 and new_lines[1] == "" then
-            attach_line = 0
-            above = true
-          end
-
-          table.insert(highlights, { "virt", attach_line, deleted_lines, above })
-        end
-      end
-
-      for _, hl in ipairs(highlights) do
-        if hl[1] == "line" then
-          vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
-            line_hl_group = hl[3],
-            priority = 120,
-          })
-        else
-          vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
-            virt_lines = hl[3],
-            virt_lines_above = hl[4],
-            priority = 120,
-          })
-        end
-      end
-    end
+    render_preview_extmarks(source_buf, ns, old_lines, new_lines)
 
     M.pending_confirmation = {
       source_buf = source_buf,
@@ -289,6 +313,14 @@ function M.setup(opts)
   opts.auto_apply_confirm = nil
 
   M.config = vim.tbl_deep_extend("force", M.config, opts)
+
+  local group = vim.api.nvim_create_augroup("CopilotChatPreviewResize", { clear = true })
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+    group = group,
+    callback = function()
+      M.refresh_pending_preview()
+    end,
+  })
 end
 
 --- Open the chat window
