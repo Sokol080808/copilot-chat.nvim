@@ -78,6 +78,15 @@ local function classify_hunk(change_old_count, change_new_count)
   return "none"
 end
 
+local function get_buffer_window_width(buf)
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    if vim.api.nvim_win_is_valid(win) then
+      return vim.api.nvim_win_get_width(win)
+    end
+  end
+  return vim.o.columns
+end
+
 local function clear_preview_state(state, restore_old)
   if not state then
     return
@@ -182,8 +191,14 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
           end
         elseif hunk_type == "delete" then
           local deleted_lines = {}
+          local win_width = get_buffer_window_width(source_buf)
           for i = 0, change_old_count - 1 do
-            table.insert(deleted_lines, { { old_lines[change_old_start + i], "DiffDelete" } })
+            local text = old_lines[change_old_start + i] or ""
+            local pad = math.max(1, win_width - vim.fn.strdisplaywidth(text))
+            table.insert(deleted_lines, {
+              { text, "DiffDelete" },
+              { string.rep(" ", pad), "DiffDelete" },
+            })
           end
 
           local line_count = math.max(1, vim.api.nvim_buf_line_count(source_buf))
