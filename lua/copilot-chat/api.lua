@@ -1,165 +1,22 @@
 local M = {}
 
-local DEFAULT_MODEL = "openai/gpt-4o"
-local INTENT_MODEL = "openai/gpt-4o-mini"
-
-local function extract_text_from_event(parsed)
-  if type(parsed) ~= "table" then
-    return nil
-  end
-
-  local choice = parsed.choices and parsed.choices[1]
-  if not choice then
-    return nil
-  end
-
-  if type(choice.delta) == "table" then
-    if type(choice.delta.content) == "string" then
-      return choice.delta.content
-    end
-
-    if type(choice.delta.content) == "table" then
-      local out = {}
-      for _, item in ipairs(choice.delta.content) do
-        if type(item) == "string" then
-          table.insert(out, item)
-        elseif type(item) == "table" then
-          if type(item.text) == "string" then
-            table.insert(out, item.text)
-          elseif type(item.value) == "string" then
-            table.insert(out, item.value)
-          end
-        end
-      end
-      if #out > 0 then
-        return table.concat(out)
-      end
-    end
-  end
-
-  if type(choice.message) == "table" and type(choice.message.content) == "string" then
-    return choice.message.content
-  end
-
-  if type(choice.text) == "string" then
-    return choice.text
-  end
-
-  return nil
-end
-
-local function get_models_token()
-  local env = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or os.getenv("GITHUB_MODELS_TOKEN")
-  if env and env ~= "" then
-    return env
-  end
-
-  if vim.fn.executable("gh") == 1 then
-    local out = vim.fn.system({ "gh", "auth", "token" })
-    if vim.v.shell_error == 0 then
-      out = out:gsub("%s+$", "")
-      if out ~= "" then
-        return out
-      end
-    end
-  end
-
-  return nil
-end
-
-local function extract_message_content(parsed)
-  local choice = parsed and parsed.choices and parsed.choices[1]
-  if not choice or type(choice.message) ~= "table" then
-    return nil
-  end
-
-  local content = choice.message.content
-  if type(content) == "string" then
-    return content
-  end
-
-  if type(content) == "table" then
-    local out = {}
-    for _, part in ipairs(content) do
-      if type(part) == "string" then
-        table.insert(out, part)
-      elseif type(part) == "table" and type(part.text) == "string" then
-        table.insert(out, part.text)
-      end
-    end
-    if #out > 0 then
-      return table.concat(out)
-    end
-  end
-
-  return nil
-end
-
 function M.detect_edit_intent(prompt, context)
-  local token = get_models_token()
-  if not token then
-    return false
-  end
-
   local ctx = context or {}
   local context_text = "has_open_file=" .. tostring(ctx.has_open_file == true)
     .. "\nfile_path=" .. (ctx.file_path or "")
     .. "\nfiletype=" .. (ctx.filetype or "")
 
-  local payload = {
-    model = INTENT_MODEL,
-    messages = {
-      {
-        role = "system",
-        content = "You classify whether a Neovim chat request should edit the current file. "
-          .. "Use provided file context. If the user asks to write/implement/add/fix/refactor code and an open file exists, usually return true. "
-          .. "Return false only for pure explanation/Q&A requests. "
-          .. "Reply with strict JSON only: {\"apply\":true} or {\"apply\":false}.",
-      },
-      {
-        role = "user",
-        content = "Context:\n"
-          .. "has_open_file=true\n"
-          .. "file_path=/tmp/main.py\n"
-          .. "filetype=python\n\n"
-          .. "Prompt: write a + b problem\n\n"
-          .. "Answer JSON:",
-      },
-      {
-        role = "assistant",
-        content = "{\"apply\":true}",
-      },
-      {
-        role = "user",
-        content = "Context:\n"
-          .. "has_open_file=true\n"
-          .. "file_path=/tmp/main.py\n"
-          .. "filetype=python\n\n"
-          .. "Prompt: explain what this code does\n\n"
-          .. "Answer JSON:",
-      },
-      {
-        role = "assistant",
-        content = "{\"apply\":false}",
-      },
-      {
-        role = "user",
-        content = "Context:\n" .. context_text .. "\n\nPrompt: " .. prompt .. "\n\nAnswer JSON:",
-      },
-    },
-    stream = false,
-    temperature = 0,
-  }
+  local sys_prompt = "You classify whether a Neovim chat request should edit the current file. "
+    .. "Use provided file context. If the user asks to write/implement/add/fix/refactor code and an open file exists, usually return true. "
+    .. "Return false only for pure explanation/Q&A requests. "
+    .. "Reply with strict JSON only: {\"apply\":true} or {\"apply\":false}."
+
+  local full_prompt = sys_prompt .. "\n\nContext:\n" .. context_text .. "\n\nPrompt: " .. prompt .. "\n\nAnswer JSON:"
 
   local cmd = {
-    "curl",
-    "-s", "-L", "-X", "POST",
-    "https://models.github.ai/inference/chat/completions",
-    "-H", "Accept: application/vnd.github+json",
-    "-H", "Authorization: Bearer " .. token,
-    "-H", "X-GitHub-Api-Version: 2022-11-28",
-    "-H", "Content-Type: application/json",
-    "-d", vim.fn.json_encode(payload),
+    "copilot",
+    "-p", full_prompt,
+    "--output-format", "json",
   }
 
   local out = vim.fn.system(cmd)
@@ -167,13 +24,19 @@ function M.detect_edit_intent(prompt, context)
     return false
   end
 
-  local ok, parsed = pcall(vim.fn.json_decode, out)
-  if not ok or not parsed or parsed.error then
-    return false
+  local lines = vim.split(out, "\n")
+  local content = ""
+  for _, line in ipairs(lines) do
+    if line ~= "" then
+      local ok, parsed = pcall(vim.fn.json_decode, line)
+      if ok and parsed and parsed.type == "assistant.message" and parsed.data and parsed.data.content then
+        content = parsed.data.content
+        break
+      end
+    end
   end
 
-  local content = extract_message_content(parsed)
-  if not content then
+  if not content or content == "" then
     return false
   end
 
@@ -186,122 +49,55 @@ function M.detect_edit_intent(prompt, context)
 end
 
 function M.login(on_chunk, on_done)
-  if vim.fn.executable("gh") ~= 1 then
-    on_chunk("⚠️ **GitHub CLI not found**: install `gh` and run `gh auth login -h github.com -w`.\n")
-    on_chunk("Or set `GITHUB_TOKEN` manually with `models` scope.\n")
-    on_chunk("Create token: https://github.com/settings/tokens\n")
+  if vim.fn.executable("copilot") ~= 1 then
+    on_chunk("⚠️ **Copilot CLI not found**: install with `npm install -g @github/copilot`.\n")
     if on_done then
       on_done()
     end
     return
   end
-
-  on_chunk("🔐 **Authentication required**. Opening terminal login flow...\n")
-  on_chunk("Complete login in the terminal split, then submit your prompt again.\n")
-  on_chunk("If chat still fails, create a PAT with `models` scope and export `GITHUB_TOKEN`.\n")
-
-  vim.schedule(function()
-    vim.cmd("botright 12split")
-    vim.cmd("terminal gh auth login -h github.com -w")
-  end)
-
+  on_chunk("🔐 **Authentication required**. Run `copilot login` in your terminal.\n")
   if on_done then
     on_done()
   end
 end
 
 function M.stream_response(prompt, on_chunk, on_done)
-  local token = get_models_token()
-  if not token then
+  if vim.fn.executable("copilot") ~= 1 then
     M.login(on_chunk, on_done)
     return
   end
 
-  local messages = nil
+  local query = ""
   if type(prompt) == "table" then
-    messages = prompt
+    local parts = {}
+    for _, msg in ipairs(prompt) do
+      table.insert(parts, msg.role:upper() .. ": " .. msg.content)
+    end
+    query = table.concat(parts, "\n\n")
   else
-    messages = {
-      { role = "system", content = "You are an AI programming assistant integrated into a Neovim editor." },
-      { role = "user", content = prompt },
-    }
+    query = prompt
   end
-
-  local payload = {
-    model = DEFAULT_MODEL,
-    messages = messages,
-    stream = true,
-  }
 
   local cmd = {
-    "curl",
-    "-N", "-s", "-L", "-X", "POST",
-    "https://models.github.ai/inference/chat/completions",
-    "-H", "Accept: application/vnd.github+json",
-    "-H", "Authorization: Bearer " .. token,
-    "-H", "X-GitHub-Api-Version: 2022-11-28",
-    "-H", "Content-Type: application/json",
-    "-d", vim.fn.json_encode(payload),
+    "copilot",
+    "-p", query,
+    "--output-format", "json",
   }
 
-  local debug_output = {}
-  local emitted_text = false
   local sse_buffer = ""
-  local assistant_text = ""
-
-  local function emit_api_error(parsed)
-    if type(parsed) == "table" and parsed.error then
-      on_chunk("\n⚠️ **API Error**: " .. vim.fn.json_encode(parsed.error) .. "\n")
-      on_chunk("Hint: GitHub Models requires a token with `models` scope.\n")
-      on_chunk("Create one: https://github.com/settings/tokens\n")
-      on_chunk("Then export it: `export GITHUB_TOKEN=...`\n")
-      return true
-    end
-    return false
-  end
 
   local function handle_event_line(line)
     if not line or line == "" then
       return
     end
 
-    if line:match("^data:") then
-      local json_str = line:gsub("^data:%s*", "")
-      if json_str == "" or json_str == "[DONE]" then
-        return
-      end
-
-      local ok, parsed = pcall(vim.fn.json_decode, json_str)
-      if ok and parsed then
-        if emit_api_error(parsed) then
-          return
-        end
-
-        local text = extract_text_from_event(parsed)
-        if text and text ~= "" then
-          emitted_text = true
-          assistant_text = assistant_text .. text
-          on_chunk(text)
-        end
-      end
-      return
-    end
-
-    if line:match("^event:") or line:match("^id:") or line:match("^:") then
-      return
-    end
-
     local ok, parsed = pcall(vim.fn.json_decode, line)
     if ok and parsed then
-      if emit_api_error(parsed) then
-        return
-      end
-
-      local text = extract_text_from_event(parsed)
-      if text and text ~= "" then
-        emitted_text = true
-        assistant_text = assistant_text .. text
-        on_chunk(text)
+      if parsed.type == "assistant.message_delta" and parsed.data and parsed.data.deltaContent then
+        if parsed.data.deltaContent ~= "" then
+          on_chunk(parsed.data.deltaContent)
+        end
       end
     end
   end
@@ -323,36 +119,24 @@ function M.stream_response(prompt, on_chunk, on_done)
           break
         end
 
-        local line = sse_buffer:sub(1, newline_idx - 1):gsub("\r$", "")
+        local line = sse_buffer:sub(1, newline_idx - 1)
         sse_buffer = sse_buffer:sub(newline_idx + 1)
-        table.insert(debug_output, line)
         handle_event_line(line)
       end
     end,
-    on_stderr = function(_, data_lines)
-      for _, line in ipairs(data_lines) do
-        if line and line ~= "" then
-          on_chunk("\n⚠️ **Curl Error**: `" .. line .. "`\n")
+    on_stderr = function(_, err_lines)
+      for _, line in ipairs(err_lines) do
+        if line and (line:match("Authentication required") or line:match("unauthorized")) then
+          on_chunk("\n⚠️ Copilot CLI requires authentication. Run `copilot login` in your terminal.\n")
         end
       end
     end,
-    on_exit = function(_, code)
+    on_exit = function(_, exit_code)
       if sse_buffer ~= "" then
-        local line = sse_buffer:gsub("\r$", "")
-        table.insert(debug_output, line)
-        handle_event_line(line)
-      end
-
-      if code ~= 0 then
-        on_chunk("\n⚠️ **Process exited with code**: `" .. tostring(code) .. "`\n")
-      end
-      if #debug_output == 0 then
-        on_chunk("\n⚠️ **Error**: Received completely empty response from server.\n")
-      elseif not emitted_text then
-        on_chunk("\n⚠️ **No text generated**: Response arrived but contained no parsable text chunks.\n")
+        handle_event_line(sse_buffer)
       end
       if on_done then
-        on_done(assistant_text)
+        on_done()
       end
     end,
   })
