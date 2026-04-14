@@ -10,6 +10,7 @@ M.config = {
 }
 
 M.history = {}
+M.pending_confirmation = nil
 
 local function ensure_chat_history()
   if #M.history == 0 then
@@ -77,8 +78,57 @@ local function classify_hunk(change_old_count, change_new_count)
   return "none"
 end
 
+local function clear_preview_state(state, restore_old)
+  if not state then
+    return
+  end
+
+  if state.source_buf and vim.api.nvim_buf_is_valid(state.source_buf) then
+    vim.api.nvim_buf_clear_namespace(state.source_buf, state.ns, 0, -1)
+    if restore_old then
+      vim.api.nvim_buf_set_lines(state.source_buf, 0, -1, false, state.old_lines)
+    end
+  end
+
+  M.pending_confirmation = nil
+end
+
+function M.apply_pending()
+  local state = M.pending_confirmation
+  if not state then
+    ui.append_to_chat({ "", "No pending change preview to apply.", "", "---", "" })
+    return
+  end
+
+  if not (state.source_buf and vim.api.nvim_buf_is_valid(state.source_buf)) then
+    M.pending_confirmation = nil
+    ui.append_to_chat({ "", "⚠️ Pending preview target buffer is no longer valid.", "", "---", "" })
+    return
+  end
+
+  vim.api.nvim_buf_clear_namespace(state.source_buf, state.ns, 0, -1)
+  vim.api.nvim_buf_set_lines(state.source_buf, 0, -1, false, state.new_lines)
+  M.pending_confirmation = nil
+  state.on_apply()
+end
+
+function M.skip_pending()
+  local state = M.pending_confirmation
+  if not state then
+    ui.append_to_chat({ "", "No pending change preview to skip.", "", "---", "" })
+    return
+  end
+
+  clear_preview_state(state, true)
+  state.on_skip()
+end
+
 local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
   vim.schedule(function()
+    if M.pending_confirmation then
+      clear_preview_state(M.pending_confirmation, true)
+    end
+
     local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
     local indices = vim.diff(old_text, new_code, { result_type = "indices" })
 
@@ -164,18 +214,21 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
       end
     end
 
-    vim.cmd("redraw") -- Force UI update so the user can see the diff before the prompt blocks
+    M.pending_confirmation = {
+      source_buf = source_buf,
+      old_lines = old_lines,
+      new_lines = new_lines,
+      ns = ns,
+      on_apply = on_apply,
+      on_skip = on_skip,
+    }
 
-    vim.ui.select({ "Apply", "Skip" }, { prompt = "Keep these Copilot changes?" }, function(choice)
-      vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
-      if choice == "Apply" then
-        vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
-        on_apply()
-      else
-        vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, old_lines)
-        on_skip()
-      end
-    end)
+    ui.append_to_chat({
+      "",
+      "Preview ready (non-blocking).",
+      "Use :CopilotChatApply to accept or :CopilotChatSkip to discard.",
+    })
+    vim.cmd("redraw")
   end)
 end
 

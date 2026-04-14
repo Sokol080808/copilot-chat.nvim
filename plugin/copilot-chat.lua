@@ -15,3 +15,11 @@ end, {})
 vim.api.nvim_create_user_command("CopilotChatAsk", function()
   require("copilot-chat").ask()
 end, {})
+
+vim.api.nvim_create_user_command("CopilotChatApply", function()
+  require("copilot-chat").apply_pending()
+end, {})
+
+vim.api.nvim_create_user_command("CopilotChatSkip", function()
+  require("copilot-chat").skip_pending()
+end, {})

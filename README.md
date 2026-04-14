@@ -70,6 +70,8 @@ use({
 :CopilotChat        " Open chat window
 :CopilotChatAsk     " Ask a question
 :CopilotChatLogin   " Start GitHub login flow
+:CopilotChatApply   " Apply pending previewed changes
+:CopilotChatSkip    " Skip pending previewed changes
 ```
 
 ## Basic Usage
@@ -116,9 +118,10 @@ When your prompt is detected as an edit request:
 2. The model returns a full updated file in one fenced code block.
 3. The plugin shows a temporary inline preview in the source buffer.
 4. Changed lines are highlighted with native diff groups.
-5. You choose `Apply` or `Skip`.
-6. `Apply` writes the final updated content.
-7. `Skip` restores the original content.
+5. You keep working in the file (scroll/edit/navigation is not blocked).
+6. Run `:CopilotChatApply` or `:CopilotChatSkip` when ready.
+7. `Apply` writes the final updated content.
+8. `Skip` restores the original content.
 
 ## Roadmap
 
