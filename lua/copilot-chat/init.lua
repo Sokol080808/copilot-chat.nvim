@@ -88,10 +88,11 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
     local ns = vim.api.nvim_create_namespace("CopilotChatPreview")
     vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
 
+    -- Preview now shows only final file content.
+    vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
+
     if indices and #indices > 0 then
-      local combined_lines = {}
       local highlights = {}
-      local last_new = 1
 
       for _, hunk in ipairs(indices) do
         local start_old, count_old = hunk[1], hunk[2]
@@ -120,45 +121,47 @@ local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
         local change_old_count = count_old - prefix - suffix
         local change_new_count = count_new - prefix - suffix
 
-        local insert_up_to = count_new == 0 and (start_new + prefix) or (start_new + prefix - 1)
-
-        while last_new <= insert_up_to do
-          table.insert(combined_lines, new_lines[last_new])
-          last_new = last_new + 1
-        end
-
-        for i = 0, change_old_count - 1 do
-          table.insert(combined_lines, old_lines[change_old_start + i])
-          table.insert(highlights, { #combined_lines - 1, "DiffDelete" })
-        end
-
         local hunk_type = classify_hunk(change_old_count, change_new_count)
-        local new_hl = hunk_type == "change" and "DiffChange" or "DiffAdd"
+        if hunk_type == "add" then
+          for i = 0, change_new_count - 1 do
+            table.insert(highlights, { "line", change_new_start - 1 + i, "DiffAdd" })
+          end
+        elseif hunk_type == "change" then
+          for i = 0, change_new_count - 1 do
+            table.insert(highlights, { "line", change_new_start - 1 + i, "DiffChange" })
+          end
+        elseif hunk_type == "delete" then
+          local deleted_lines = {}
+          for i = 0, change_old_count - 1 do
+            table.insert(deleted_lines, { { old_lines[change_old_start + i], "DiffDelete" } })
+          end
 
-        for i = 0, change_new_count - 1 do
-          table.insert(combined_lines, new_lines[change_new_start + i])
-          table.insert(highlights, { #combined_lines - 1, new_hl })
+          local line_count = math.max(1, vim.api.nvim_buf_line_count(source_buf))
+          local attach_line = math.min(math.max(0, change_new_start), line_count - 1)
+          local above = change_new_start < line_count
+          if line_count == 1 and new_lines[1] == "" then
+            attach_line = 0
+            above = true
+          end
+
+          table.insert(highlights, { "virt", attach_line, deleted_lines, above })
         end
-
-        last_new = math.max(last_new, change_new_start + change_new_count)
       end
-
-      while last_new <= #new_lines do
-        table.insert(combined_lines, new_lines[last_new])
-        last_new = last_new + 1
-      end
-
-      vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, combined_lines)
 
       for _, hl in ipairs(highlights) do
-        vim.api.nvim_buf_set_extmark(source_buf, ns, hl[1], 0, {
-          line_hl_group = hl[2],
-          priority = 120,
-        })
+        if hl[1] == "line" then
+          vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
+            line_hl_group = hl[3],
+            priority = 120,
+          })
+        else
+          vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
+            virt_lines = hl[3],
+            virt_lines_above = hl[4],
+            priority = 120,
+          })
+        end
       end
-    else
-      -- No diff, just apply the new code unconditionally
-      vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
     end
 
     vim.cmd("redraw") -- Force UI update so the user can see the diff before the prompt blocks
