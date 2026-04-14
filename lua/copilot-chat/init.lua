@@ -5,8 +5,8 @@ local api = require("copilot-chat.api")
 -- Your default configuration
 M.config = {
   system_prompt = "You are an AI programming assistant integrated into a Neovim editor.",
-  auto_apply_edits = true,
-  auto_apply_confirm = true,
+  enable_edit_requests = true,
+  confirm_before_apply = true,
 }
 
 M.history = {}
@@ -18,7 +18,7 @@ local function ensure_chat_history()
 end
 
 local function should_auto_apply(prompt)
-  if not M.config.auto_apply_edits then
+  if not M.config.enable_edit_requests then
     return false
   end
 
@@ -204,7 +204,20 @@ end
 --- Setup function to initialize the plugin
 --- @param opts table|nil User configuration options
 function M.setup(opts)
-  M.config = vim.tbl_deep_extend("force", M.config, opts or {})
+  opts = opts or {}
+
+  -- Backward-compatible aliases for legacy option names.
+  if opts.auto_apply_edits ~= nil and opts.enable_edit_requests == nil then
+    opts.enable_edit_requests = opts.auto_apply_edits
+  end
+  if opts.auto_apply_confirm ~= nil and opts.confirm_before_apply == nil then
+    opts.confirm_before_apply = opts.auto_apply_confirm
+  end
+
+  opts.auto_apply_edits = nil
+  opts.auto_apply_confirm = nil
+
+  M.config = vim.tbl_deep_extend("force", M.config, opts)
 end
 
 --- Open the chat window
@@ -265,7 +278,7 @@ local function submit_prompt(prompt)
             ui.append_to_chat({ "", "---", "" })
           end
 
-          if M.config.auto_apply_confirm then
+          if M.config.confirm_before_apply then
             with_apply_confirmation(source_buf, code, function()
               apply(true)
             end, skip)
