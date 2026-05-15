@@ -109,14 +109,26 @@ require("copilot-chat").setup({
   edit_fence_tag = "UPDATE",
   -- Install <leader>c{c,a,i,f,n} mappings.
   default_keymaps = false,
-  -- Add a per-turn guidance block telling Copilot to prefer editing the
-  -- active file and avoid creating new files unless asked. Soft nudge —
-  -- file tools stay available. Set false for full agent freedom.
-  prefer_in_place_edits = true,
+  -- Load a guide file (default: the plugin's bundled GUIDE.md) and prepend
+  -- it to the first user message of every session. The CLI keeps it in
+  -- conversation memory via --resume, so subsequent turns don't re-pay the
+  -- token cost. Set false to disable; the [Editor context] block still ships
+  -- every turn either way.
+  use_guide = true,
+  -- Override path to a custom guide file. nil → bundled GUIDE.md.
+  guide_path = nil,
 })
 ```
 
-## Editor context Copilot sees on every turn
+## How Copilot is briefed
+
+There are two layers:
+
+1. **Bundled `GUIDE.md`** (sent once per session, on the first user message). Lives at `lua/copilot-chat/GUIDE.md`. Tells Copilot about the edit/apply diff-preview flow, the strong "prefer in-place edits" default, tool-usage hints, response style, and the slash/reference shortcuts. Override with `guide_path = "/your/own.md"` in `setup()`, or set `use_guide = false` to skip it entirely. After the first turn, the CLI keeps the guide in its own session memory (`--resume`), so subsequent prompts don't re-send it — you pay the token cost once.
+
+2. **Per-turn `[Editor context]` block** (sent every turn — it's genuinely dynamic):
+
+
 
 Each chat request prepends a small block telling Copilot:
 

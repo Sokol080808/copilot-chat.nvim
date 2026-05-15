@@ -9,10 +9,13 @@ M.config = {
   system_prompt = nil,
   edit_fence_tag = "UPDATE",
   default_keymaps = false,
-  -- Inject a per-turn guidance block telling Copilot to prefer editing the
-  -- active file and avoid creating new files unless asked. Soft nudge only —
-  -- file tools remain available. Set false for full agent freedom.
-  prefer_in_place_edits = true,
+  -- Send a one-shot guide file (default: the bundled GUIDE.md) on the first
+  -- user message of a session. The CLI keeps it in conversation memory via
+  -- --resume, so subsequent turns don't re-pay the token cost. Set false to
+  -- disable. The runtime [Editor context] block still ships every turn.
+  use_guide = true,
+  -- Override path to a custom guide file. nil → bundled GUIDE.md.
+  guide_path = nil,
 }
 
 M.session_id = nil
@@ -26,11 +29,33 @@ local function ensure_session()
   end
 end
 
-local function build_user_message(prompt)
-  if M._first_turn and M.config.system_prompt and M.config.system_prompt ~= "" then
-    return M.config.system_prompt .. "\n\n" .. prompt
+local function read_guide()
+  local path = M.config.guide_path
+  if not path or path == "" then
+    local found = vim.api.nvim_get_runtime_file("lua/copilot-chat/GUIDE.md", false)
+    if #found == 0 then return nil end
+    path = found[1]
   end
-  return prompt
+  if vim.fn.filereadable(path) == 0 then return nil end
+  local ok, lines = pcall(vim.fn.readfile, path)
+  if not ok or not lines or #lines == 0 then return nil end
+  return table.concat(lines, "\n")
+end
+
+local function build_user_message(prompt)
+  if not M._first_turn then return prompt end
+
+  local prelude = {}
+  if M.config.use_guide then
+    local guide = read_guide()
+    if guide and guide ~= "" then table.insert(prelude, guide) end
+  end
+  if M.config.system_prompt and M.config.system_prompt ~= "" then
+    table.insert(prelude, M.config.system_prompt)
+  end
+
+  if #prelude == 0 then return prompt end
+  return table.concat(prelude, "\n\n") .. "\n\n" .. prompt
 end
 
 local function abs_path(p)
@@ -101,17 +126,6 @@ end
 
 local function context_preamble(ctx, range, hint_workspace)
   local parts = {}
-
-  if M.config.prefer_in_place_edits then
-    table.insert(parts, "[Guidance]")
-    table.insert(parts, "- The user is editing inside Neovim. Their canonical edit flow is :CopilotChatEdit, which captures a fenced code block from your reply and shows them a diff preview to accept or reject.")
-    table.insert(parts, "- Strongly prefer editing files in place. Avoid creating new files unless the user explicitly asks for one, or the change has no sensible home in any existing file.")
-    table.insert(parts, "- For modifications, prefer returning a fenced code block in your reply over invoking the write tool — this keeps the user in control of what lands on disk.")
-    table.insert(parts, "- If you're unsure whether a request wants an in-place edit or a new file, ask before acting.")
-    table.insert(parts, "[End of guidance]")
-    table.insert(parts, "")
-  end
-
   table.insert(parts, "[Editor context]")
   table.insert(parts, "cwd: " .. ctx.cwd)
   if hint_workspace then
