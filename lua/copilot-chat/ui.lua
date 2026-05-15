@@ -65,6 +65,7 @@ local function make_input_buffer()
   api.nvim_set_option_value("swapfile", false, { buf = buf })
   api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
   api.nvim_set_option_value("filetype", "markdown", { buf = buf })
+  api.nvim_set_option_value("completefunc", "v:lua.require'copilot-chat'._complete", { buf = buf })
   api.nvim_buf_set_name(buf, "[CopilotChatInput]")
   return buf
 end
@@ -78,6 +79,9 @@ end
 local function bind_input_keys(buf)
   api.nvim_buf_set_keymap(buf, "i", "<C-s>",
     "<Esc><cmd>lua require('copilot-chat')._submit_input()<CR>",
+    { noremap = true, silent = true })
+  api.nvim_buf_set_keymap(buf, "i", "<Tab>",
+    "<cmd>lua require('copilot-chat')._tab()<CR>",
     { noremap = true, silent = true })
   map(buf, "n", "<CR>", "_submit_input")
   map(buf, "n", "q",    "close")

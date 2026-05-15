@@ -1,12 +1,14 @@
 local api = require("copilot-chat.api")
 local ui = require("copilot-chat.ui")
 local diff = require("copilot-chat.diff")
+local prompt_mod = require("copilot-chat.prompt")
 
 local M = {}
 
 M.config = {
   system_prompt = nil,
   edit_fence_tag = "UPDATE",
+  default_keymaps = false,
 }
 
 M.session_id = nil
@@ -88,10 +90,13 @@ local function send(prompt, on_text, on_done, send_opts)
   })
 end
 
-local function context_preamble(ctx, range)
+local function context_preamble(ctx, range, hint_workspace)
   local parts = {}
   table.insert(parts, "[Editor context]")
   table.insert(parts, "cwd: " .. ctx.cwd)
+  if hint_workspace then
+    table.insert(parts, "user invoked @workspace: prefer to actively search the workspace (bash/grep/view) before answering instead of guessing.")
+  end
 
   if ctx.active then
     local active = "active file: " .. short_path(ctx.active.path)
@@ -193,6 +198,37 @@ local function reject_if_busy()
   return true
 end
 
+local function show_slash_help()
+  local lines = { "", "### Copilot", "", "Available slash commands:" }
+  local names = vim.tbl_keys(prompt_mod.slash_commands)
+  table.sort(names)
+  for _, name in ipairs(names) do
+    table.insert(lines, "- `/" .. name .. "` — " .. prompt_mod.slash_commands[name].description)
+  end
+  table.insert(lines, "")
+  table.insert(lines, "References: type `#file:path/to/foo.lua` to inline a file. Add `@workspace` to nudge Copilot to search the project.")
+  table.insert(lines, "")
+  table.insert(lines, "---")
+  table.insert(lines, "")
+  ui.append_chat(lines)
+end
+
+--- Build the actual prompt sent to Copilot from the user's raw input.
+--- Returns:
+---   sent_text     - the text sent to Copilot (slash + #file expanded, @workspace stripped)
+---   has_workspace - whether @workspace was present
+---   refs          - file refs metadata (for chat hint lines)
+---   meta_slash    - "help" or "clear" if the user invoked one of those (caller handles)
+local function compose_prompt(text, ctx)
+  local expanded, slash_name = prompt_mod.expand_slash(text, ctx)
+  if slash_name == "help" or slash_name == "clear" then
+    return nil, false, {}, slash_name
+  end
+  local resolved, refs = prompt_mod.expand_file_refs(expanded, ctx.cwd)
+  local stripped, has_workspace = prompt_mod.expand_workspace(resolved)
+  return stripped, has_workspace, refs, nil
+end
+
 local function submit_chat(prompt, range)
   if not prompt or vim.trim(prompt) == "" then return end
   if reject_if_busy() then return end
@@ -206,12 +242,38 @@ local function submit_chat(prompt, range)
     end
   end
 
-  local preamble = context_preamble(ctx, range)
-  local final_prompt = preamble .. "\n\n" .. prompt
+  local body, has_workspace, refs, meta_slash = compose_prompt(prompt, ctx)
 
+  -- Echo the user's literal input first.
   append_user_message("You", prompt)
-  open_assistant_block()
   ui.clear_input()
+
+  if meta_slash == "help" then
+    show_slash_help()
+    return
+  end
+  if meta_slash == "clear" then
+    M.new_session()
+    return
+  end
+
+  if refs and #refs > 0 then
+    local hints = {}
+    for _, r in ipairs(refs) do
+      if r.ok then
+        table.insert(hints, "  - `" .. r.path .. "` (" .. r.line_count .. " lines)")
+      else
+        table.insert(hints, "  - `" .. r.path .. "` — " .. r.error)
+      end
+    end
+    ui.append_chat({ "", "> 📎 Inlined files:" })
+    ui.append_chat(hints)
+  end
+
+  open_assistant_block()
+
+  local preamble = context_preamble(ctx, range, has_workspace)
+  local final_prompt = preamble .. "\n\n" .. body
 
   send(final_prompt, ui.stream_chat, function()
     close_message_block()
@@ -308,6 +370,17 @@ local function submit_edit(prompt, range)
   })
 end
 
+local function install_default_keymaps()
+  local set = vim.keymap.set
+  set({ "n" }, "<leader>cc", "<cmd>CopilotChat<CR>",          { silent = true, desc = "Toggle Copilot chat" })
+  set({ "n" }, "<leader>ca", "<cmd>CopilotChatAsk<CR>",       { silent = true, desc = "Copilot chat: ask" })
+  set({ "v" }, "<leader>ca", ":CopilotChatAsk ",              { silent = false, desc = "Copilot chat: ask about selection" })
+  set({ "n" }, "<leader>ci", ":CopilotChatEdit ",             { silent = false, desc = "Copilot edit current file" })
+  set({ "v" }, "<leader>ci", ":CopilotChatEdit ",             { silent = false, desc = "Copilot edit selection" })
+  set({ "n" }, "<leader>cf", "<cmd>CopilotChatFixDiagnostic<CR>", { silent = true, desc = "Copilot fix diagnostic at cursor" })
+  set({ "n" }, "<leader>cn", "<cmd>CopilotChatNew<CR>",       { silent = true, desc = "Copilot new chat session" })
+end
+
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
 
@@ -316,6 +389,10 @@ function M.setup(opts)
     group = group,
     callback = function() diff.refresh() end,
   })
+
+  if M.config.default_keymaps then
+    install_default_keymaps()
+  end
 end
 
 function M.open()  ui.open()  end
@@ -388,6 +465,136 @@ function M.login()
   end
   vim.cmd("botright split | resize 15 | terminal copilot login")
   vim.cmd("startinsert")
+end
+
+--- Run a slash command directly (used by :CopilotChatExplain, /Tests, etc.).
+function M.slash(name, arg, range)
+  if not prompt_mod.slash_commands[name] then
+    vim.notify("Unknown slash command: /" .. name, vim.log.levels.ERROR)
+    return
+  end
+  local literal = "/" .. name
+  if arg and arg ~= "" then literal = literal .. " " .. arg end
+  M.send_prompt(literal, range)
+end
+
+--- Submit the diagnostic(s) at the cursor in the source window as an edit
+--- request. If there's nothing on this line, falls back to all diagnostics
+--- in the buffer (still narrows by severity).
+function M.fix_diagnostic()
+  local source_buf, err = source_file_buf()
+  if not source_buf then
+    vim.notify(err, vim.log.levels.ERROR)
+    return
+  end
+
+  local source_win = ui.source_win
+  if not (source_win and vim.api.nvim_win_is_valid(source_win)
+      and vim.api.nvim_win_get_buf(source_win) == source_buf) then
+    source_win = nil
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_buf(w) == source_buf then
+        source_win = w
+        break
+      end
+    end
+  end
+
+  local lnum = nil
+  if source_win then
+    lnum = vim.api.nvim_win_get_cursor(source_win)[1] - 1
+  end
+
+  local diags = lnum and vim.diagnostic.get(source_buf, { lnum = lnum }) or {}
+  local scope = "line " .. (lnum and (lnum + 1) or "?")
+  if #diags == 0 then
+    diags = vim.diagnostic.get(source_buf)
+    scope = "buffer"
+  end
+  if #diags == 0 then
+    vim.notify("No diagnostics in this buffer.", vim.log.levels.INFO)
+    return
+  end
+
+  local descs = {}
+  for _, d in ipairs(diags) do
+    local severity = vim.diagnostic.severity[d.severity] or "?"
+    table.insert(descs, "- " .. severity .. " line " .. (d.lnum + 1)
+      .. " col " .. ((d.col or 0) + 1)
+      .. (d.source and (" [" .. d.source .. "]") or "")
+      .. ": " .. (d.message or ""))
+  end
+
+  local p = "Fix the following diagnostics in this file (" .. scope .. "):\n"
+    .. table.concat(descs, "\n")
+    .. "\n\nMake the smallest change that resolves them. Don't drift into unrelated edits."
+  M.edit(p, nil)
+end
+
+M.slash_commands = prompt_mod.slash_commands
+
+--- Smart <Tab> in the input buffer: trigger user completion when after `/` or
+--- `#file:`; otherwise behave like a normal Tab.
+function M._tab()
+  local line = vim.api.nvim_get_current_line()
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  local before = line:sub(1, col)
+  local termcodes
+  if before:match("#file:%S*$") or before:match("/[%w_%-]*$") then
+    termcodes = vim.api.nvim_replace_termcodes("<C-x><C-u>", true, false, true)
+  else
+    termcodes = vim.api.nvim_replace_termcodes("<Tab>", true, false, true)
+  end
+  vim.api.nvim_feedkeys(termcodes, "n", false)
+end
+
+--- omnifunc / completefunc body for the input buffer.
+function M._complete(findstart, base)
+  local line = vim.api.nvim_get_current_line()
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  local before = line:sub(1, col)
+
+  if findstart == 1 then
+    local s = before:find("#file:%S*$")
+    if s then
+      return s + 5  -- after "#file:" prefix
+    end
+    s = before:find("/[%w_%-]*$")
+    if s then
+      return s - 1  -- include the leading slash
+    end
+    return -1
+  end
+
+  if before:match("#file:%S*$") then
+    local matches = {}
+    local handle = io.popen("git ls-files 2>/dev/null")
+    if handle then
+      for f in handle:lines() do
+        if base == "" or f:find(base, 1, true) then
+          table.insert(matches, f)
+          if #matches >= 50 then break end
+        end
+      end
+      handle:close()
+    end
+    return matches
+  end
+
+  if base:sub(1, 1) == "/" then
+    local matches = {}
+    local names = vim.tbl_keys(prompt_mod.slash_commands)
+    table.sort(names)
+    for _, name in ipairs(names) do
+      local word = "/" .. name
+      if word:find(base, 1, true) == 1 then
+        table.insert(matches, { word = word, menu = prompt_mod.slash_commands[name].description })
+      end
+    end
+    return matches
+  end
+
+  return {}
 end
 
 return M

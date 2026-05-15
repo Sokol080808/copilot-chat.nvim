@@ -39,24 +39,52 @@ use({
 
 ## Commands
 
-| Command              | Description                                                   |
-| -------------------- | ------------------------------------------------------------- |
-| `:CopilotChat`       | Toggle the chat panel.                                        |
-| `:CopilotChatOpen`   | Open the chat panel.                                          |
-| `:CopilotChatClose`  | Close the chat panel.                                         |
-| `:CopilotChatAsk`    | Focus the input box (or `:CopilotChatAsk <prompt>` to send).  |
-| `:CopilotChatEdit`   | Edit current buffer; accepts a range and an optional prompt.  |
-| `:CopilotChatNew`    | Start a fresh Copilot session (rotates the session UUID).     |
-| `:CopilotChatApply`  | Accept the pending inline edit preview.                       |
-| `:CopilotChatSkip`   | Reject the pending inline edit preview and restore content.   |
-| `:CopilotChatCancel` | Cancel an in-flight reply.                                    |
-| `:CopilotChatLogin`  | Open `copilot login` in a terminal split.                     |
+| Command                       | Description                                                          |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `:CopilotChat`                | Toggle the chat panel.                                               |
+| `:CopilotChatOpen`            | Open the chat panel.                                                 |
+| `:CopilotChatClose`           | Close the chat panel.                                                |
+| `:CopilotChatAsk`             | Focus the input (or `:CopilotChatAsk <prompt>` to send; range OK).   |
+| `:CopilotChatEdit`            | Edit current buffer; accepts a range and an optional prompt.         |
+| `:CopilotChatExplain`         | `/explain` shortcut. Range OK.                                       |
+| `:CopilotChatTests`           | `/tests` shortcut. Range OK.                                         |
+| `:CopilotChatFix`             | `/fix` shortcut. Range OK.                                           |
+| `:CopilotChatDoc`             | `/doc` shortcut. Range OK.                                           |
+| `:CopilotChatOptimize`        | `/optimize` shortcut. Range OK.                                      |
+| `:CopilotChatReview`          | `/review` shortcut. Range OK.                                        |
+| `:CopilotChatFixDiagnostic`   | Submit the diagnostic at the cursor as an edit request.              |
+| `:CopilotChatNew`             | Start a fresh Copilot session (rotates the session UUID).            |
+| `:CopilotChatApply`           | Accept the pending inline edit preview.                              |
+| `:CopilotChatSkip`            | Reject the pending inline edit preview and restore content.          |
+| `:CopilotChatCancel`          | Cancel an in-flight reply.                                           |
+| `:CopilotChatLogin`           | Open `copilot login` in a terminal split.                            |
+
+## Slash commands and references (in the input box)
+
+- `/explain`, `/tests`, `/fix`, `/doc`, `/optimize`, `/review` — pre-baked prompts. Add free-form text after the slash to focus the request (`/explain how does the auth flow work`).
+- `/help` lists slash commands. `/clear` starts a new session.
+- `#file:path/to/foo.lua` inlines that file's contents into the prompt sent to Copilot. The path is resolved relative to your cwd or absolutely if it starts with `/`. Multiple references are fine.
+- `@workspace` nudges Copilot to actively search the workspace before answering (it already has filesystem access, this just tells it to use it).
+
+`<Tab>` in the input box triggers context-aware completion: slash commands after `/`, `git ls-files` results after `#file:`. Otherwise it inserts a literal Tab.
 
 ## Keybindings inside the chat
 
-- **Input box (insert mode):** `<C-s>` to send.
-- **Input box (normal mode):** `<CR>` to send, `q` to close.
+- **Input (insert mode):** `<C-s>` to send. `<Tab>` for completion (after `/` or `#file:`).
+- **Input (normal mode):** `<CR>` to send, `q` to close.
 - **Chat history:** `i` / `a` / `<CR>` to focus the input, `q` to close.
+
+## Optional default keymaps
+
+Set `default_keymaps = true` in `setup()` to install:
+
+| Mapping        | Action                                |
+| -------------- | ------------------------------------- |
+| `<leader>cc`   | Toggle chat                           |
+| `<leader>ca`   | Ask (visual: ask about selection)     |
+| `<leader>ci`   | Edit current file (visual: selection) |
+| `<leader>cf`   | Fix diagnostic at cursor              |
+| `<leader>cn`   | New session                           |
 
 ## Edit flow
 
@@ -79,8 +107,26 @@ require("copilot-chat").setup({
   system_prompt = nil,
   -- Fence tag the model is asked to use for whole-file replacements.
   edit_fence_tag = "UPDATE",
+  -- Install <leader>c{c,a,i,f,n} mappings.
+  default_keymaps = false,
 })
 ```
+
+## Editor context Copilot sees on every turn
+
+Each chat request prepends a small block telling Copilot:
+
+```
+[Editor context]
+cwd: /path/to/project
+active file: lua/foo.lua (cursor: line 42)
+other open files:
+  - lua/bar.lua
+  - lua/baz.lua
+[End of editor context]
+```
+
+When invoked with a range (`:'<,'>CopilotChatAsk explain`), the selected lines are inlined too. The CLI is spawned with `cwd = vim.fn.getcwd()` and `--add-dir` for any open buffer outside cwd, so Copilot's `view` tool can actually read the files it's been told about.
 
 ## How session state works
 
