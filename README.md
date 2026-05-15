@@ -89,7 +89,7 @@ Set `default_keymaps = true` in `setup()` to install:
 There is no separate "edit" command — every chat reply that proposes a change goes through the same diff-preview pipeline:
 
 1. You ask in chat (`:CopilotChatAsk`, a slash command, anything).
-2. Copilot is told (via the bundled `GUIDE.md`) that the `write` tool is disabled and that file changes must come back as **filename-tagged fenced code blocks**, like:
+2. Copilot is told (via the bundled `GUIDE.md`) to strongly prefer returning file changes as **filename-tagged fenced code blocks**, like:
 
        ```lua lua/foo.lua
        <complete updated file>

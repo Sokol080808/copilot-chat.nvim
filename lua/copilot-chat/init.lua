@@ -384,7 +384,6 @@ local function submit_chat(prompt, range)
   end, {
     cwd = ctx.cwd,
     add_dirs = extra_dirs_for(ctx.open, ctx.cwd),
-    deny_writes = true,
   })
 end
 
