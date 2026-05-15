@@ -33,14 +33,19 @@ local function send(prompt, on_text, on_done)
   local message = build_user_message(prompt)
   M._first_turn = false
   ui.set_busy(true)
-  ui.begin_stream()
+
+  local stream_ui = on_text ~= nil
+  if stream_ui then ui.begin_stream() end
+
+  local on_chunk
+  if on_text then
+    on_chunk = function(chunk)
+      vim.schedule(function() on_text(chunk) end)
+    end
+  end
 
   M._current_job = api.stream(message, M.session_id, {
-    on_chunk = function(chunk)
-      vim.schedule(function()
-        if on_text then on_text(chunk) end
-      end)
-    end,
+    on_chunk = on_chunk,
     on_error = function(err)
       vim.schedule(function()
         ui.append_chat({ "", "> ⚠️ " .. err })
@@ -48,13 +53,41 @@ local function send(prompt, on_text, on_done)
     end,
     on_done = function(final_text)
       vim.schedule(function()
-        ui.end_stream()
+        if stream_ui then ui.end_stream() end
         ui.set_busy(false)
         M._current_job = nil
         if on_done then on_done(final_text or "") end
       end)
     end,
   })
+end
+
+local function ensure_trailing_nl(s)
+  if s == "" or s:sub(-1) == "\n" then return s end
+  return s .. "\n"
+end
+
+local function diff_stats(old_text, new_text)
+  -- Normalize trailing newline so vim.diff doesn't count "no newline at EOF"
+  -- artifacts as edits to the last real line.
+  local unified = vim.diff(ensure_trailing_nl(old_text), ensure_trailing_nl(new_text),
+    { result_type = "unified", ctxlen = 0 })
+  if not unified or unified == "" then return 0, 0 end
+  local added, removed = 0, 0
+  for line in (unified .. "\n"):gmatch("([^\n]*)\n") do
+    local first = line:sub(1, 1)
+    if first == "+" and line:sub(1, 3) ~= "+++" then
+      added = added + 1
+    elseif first == "-" and line:sub(1, 3) ~= "---" then
+      removed = removed + 1
+    end
+  end
+  return added, removed
+end
+
+local function short_path(path)
+  if not path or path == "" then return "<unnamed>" end
+  return vim.fn.fnamemodify(path, ":~:.")
 end
 
 local function source_file_buf()
@@ -119,6 +152,7 @@ local function submit_edit(prompt, range)
   end
 
   local path = vim.api.nvim_buf_get_name(source_buf)
+  local label = short_path(path)
   local file_lines = vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
   local file_body = table.concat(file_lines, "\n")
 
@@ -132,7 +166,7 @@ local function submit_edit(prompt, range)
   local instructions = table.concat({
     "You are editing a file inside Neovim.",
     "Return the COMPLETE updated file content in a single fenced code block opening with ```" .. tag .. " and closing with ```.",
-    "Do not add explanation outside the code block. Preserve existing indentation style.",
+    "Do not add explanation outside the code block. Preserve the existing indentation style and only change what the request asks for — leave unrelated lines exactly as they are.",
     "",
     "Target file: " .. path,
     "",
@@ -149,32 +183,35 @@ local function submit_edit(prompt, range)
   instructions = instructions .. "\n\nRequested change:\n" .. prompt
 
   append_user_message("You (edit)", prompt)
-  open_assistant_block()
+  ui.append_chat({ "", "> ✏️ Generating edit for `" .. label .. "`…" })
   ui.clear_input()
 
-  send(instructions, ui.stream_chat, function(full)
+  -- on_text=nil: don't pour the regenerated file into chat.
+  send(instructions, nil, function(full)
     local code = extract_fence(full, tag)
     if not code then
-      ui.append_chat({ "", "> ⚠️ Edit failed: model did not return a fenced `" .. tag .. "` block.", "" })
+      ui.append_chat({ "", "> ⚠️ Edit failed: model did not return a fenced `" .. tag .. "` block." })
+      close_message_block()
+      return
+    end
+
+    local added, removed = diff_stats(file_body, code)
+    if added == 0 and removed == 0 then
+      ui.append_chat({ "", "> ℹ️ Model returned the file unchanged — nothing to preview." })
       close_message_block()
       return
     end
 
     diff.preview(source_buf, code,
-      function()
-        ui.append_chat({ "", "Applied changes to: " .. vim.api.nvim_buf_get_name(source_buf), "" })
-        close_message_block()
-      end,
-      function()
-        ui.append_chat({ "", "Skipped pending edit.", "" })
-        close_message_block()
-      end
+      function() ui.append_chat({ "", "> ✅ Applied to `" .. label .. "`." }) end,
+      function() ui.append_chat({ "", "> ↩️ Skipped." }) end
     )
 
     ui.append_chat({
       "",
-      "Preview ready. :CopilotChatApply to accept or :CopilotChatSkip to discard.",
+      "> ✏️ Edit ready (+" .. added .. " / -" .. removed .. "). `:CopilotChatApply` to accept, `:CopilotChatSkip` to discard.",
     })
+    close_message_block()
   end)
 end
 
