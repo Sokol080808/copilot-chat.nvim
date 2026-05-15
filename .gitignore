@@ -9,3 +9,6 @@ Thumbs.db
 
 # Local validation scripts
 scripts/
+
+# Local AI assistant guidance
+CLAUDE.md

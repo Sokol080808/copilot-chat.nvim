@@ -1,430 +1,274 @@
-local M = {}
-local ui = require("copilot-chat.ui")
 local api = require("copilot-chat.api")
+local ui = require("copilot-chat.ui")
+local diff = require("copilot-chat.diff")
 
--- Your default configuration
+local M = {}
+
 M.config = {
-  system_prompt = "You are an AI programming assistant integrated into a Neovim editor.",
-  enable_edit_requests = true,
-  confirm_before_apply = true,
+  system_prompt = nil,
+  edit_fence_tag = "UPDATE",
 }
 
-M.history = {}
-M.pending_confirmation = nil
+M.session_id = nil
+M._first_turn = true
+M._current_job = nil
 
-local function ensure_chat_history()
-  if #M.history == 0 then
-    table.insert(M.history, { role = "system", content = M.config.system_prompt })
+local function ensure_session()
+  if not M.session_id then
+    M.session_id = api.new_session_id()
+    M._first_turn = true
   end
 end
 
-local function should_auto_apply(prompt)
-  if not M.config.enable_edit_requests then
-    return false
+local function build_user_message(prompt)
+  if M._first_turn and M.config.system_prompt and M.config.system_prompt ~= "" then
+    return M.config.system_prompt .. "\n\n" .. prompt
   end
-
-  local source_buf = ui.get_source_buf()
-  if not source_buf or not vim.api.nvim_buf_is_valid(source_buf) then
-    return false
-  end
-
-  if vim.bo[source_buf].buftype ~= "" then
-    return false
-  end
-
-  return true
+  return prompt
 end
 
-local function extract_code_block(text)
-  if not text or text == "" then
-    return nil
-  end
+local function send(prompt, on_text, on_done)
+  ensure_session()
 
-  local _, _, body = text:find("```UPDATE\n([%s%S]-)\n```")
-  return body
-end
+  local message = build_user_message(prompt)
+  M._first_turn = false
+  ui.set_busy(true)
 
-local function get_source_buf()
-  local source_buf = ui.get_source_buf()
-  if not source_buf then
-    return nil, "No source buffer found."
-  end
-
-  if vim.bo[source_buf].buftype ~= "" then
-    return nil, "Target buffer is not a file buffer."
-  end
-
-  return source_buf, nil
-end
-
-local function apply_to_source_buffer(source_buf, code)
-  if not source_buf or not vim.api.nvim_buf_is_valid(source_buf) then
-    return false, "Source buffer is not valid."
-  end
-
-  local lines = vim.split(code, "\n", { plain = true })
-  vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, lines)
-  return true, vim.api.nvim_buf_get_name(source_buf)
-end
-
-local function classify_hunk(change_old_count, change_new_count)
-  if change_old_count > 0 and change_new_count > 0 then
-    return "change"
-  end
-  if change_old_count > 0 then
-    return "delete"
-  end
-  if change_new_count > 0 then
-    return "add"
-  end
-  return "none"
-end
-
-local function get_buffer_window_width(buf)
-  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
-    if vim.api.nvim_win_is_valid(win) then
-      return vim.api.nvim_win_get_width(win)
-    end
-  end
-  return vim.o.columns
-end
-
-local function render_preview_extmarks(source_buf, ns, old_lines, new_lines)
-  vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
-
-  local old_text = table.concat(old_lines, "\n")
-  local new_text = table.concat(new_lines, "\n")
-  local indices = vim.diff(old_text, new_text, { result_type = "indices" })
-  if not (indices and #indices > 0) then
-    return
-  end
-
-  local highlights = {}
-
-  for _, hunk in ipairs(indices) do
-    local start_old, count_old = hunk[1], hunk[2]
-    local start_new, count_new = hunk[3], hunk[4]
-
-    local prefix = 0
-    while prefix < count_old and prefix < count_new do
-      if old_lines[start_old + prefix] ~= new_lines[start_new + prefix] then
-        break
-      end
-      prefix = prefix + 1
-    end
-
-    local suffix = 0
-    while suffix < (count_old - prefix) and suffix < (count_new - prefix) do
-      local old_idx = start_old + count_old - 1 - suffix
-      local new_idx = start_new + count_new - 1 - suffix
-      if old_lines[old_idx] ~= new_lines[new_idx] then
-        break
-      end
-      suffix = suffix + 1
-    end
-
-    local change_old_start = start_old + prefix
-    local change_new_start = start_new + prefix
-    local change_old_count = count_old - prefix - suffix
-    local change_new_count = count_new - prefix - suffix
-
-    local hunk_type = classify_hunk(change_old_count, change_new_count)
-    if hunk_type == "add" then
-      for i = 0, change_new_count - 1 do
-        table.insert(highlights, { "line", change_new_start - 1 + i, "DiffAdd" })
-      end
-    elseif hunk_type == "change" then
-      for i = 0, change_new_count - 1 do
-        table.insert(highlights, { "line", change_new_start - 1 + i, "DiffChange" })
-      end
-    elseif hunk_type == "delete" then
-      local deleted_lines = {}
-      local win_width = get_buffer_window_width(source_buf)
-      for i = 0, change_old_count - 1 do
-        local text = old_lines[change_old_start + i] or ""
-        local pad = math.max(1, win_width - vim.fn.strdisplaywidth(text))
-        table.insert(deleted_lines, {
-          { text, "DiffDelete" },
-          { string.rep(" ", pad), "DiffDelete" },
-        })
-      end
-
-      local line_count = math.max(1, vim.api.nvim_buf_line_count(source_buf))
-      local attach_line = math.min(math.max(0, change_new_start), line_count - 1)
-      local above = change_new_start < line_count
-      if line_count == 1 and new_lines[1] == "" then
-        attach_line = 0
-        above = true
-      end
-
-      table.insert(highlights, { "virt", attach_line, deleted_lines, above })
-    end
-  end
-
-  for _, hl in ipairs(highlights) do
-    if hl[1] == "line" then
-      vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
-        line_hl_group = hl[3],
-        priority = 120,
-      })
-    else
-      vim.api.nvim_buf_set_extmark(source_buf, ns, hl[2], 0, {
-        virt_lines = hl[3],
-        virt_lines_above = hl[4],
-        priority = 120,
-      })
-    end
-  end
-end
-
-local function clear_preview_state(state, restore_old)
-  if not state then
-    return
-  end
-
-  if state.source_buf and vim.api.nvim_buf_is_valid(state.source_buf) then
-    vim.api.nvim_buf_clear_namespace(state.source_buf, state.ns, 0, -1)
-    if restore_old then
-      vim.api.nvim_buf_set_lines(state.source_buf, 0, -1, false, state.old_lines)
-    end
-  end
-
-  M.pending_confirmation = nil
-end
-
-function M.apply_pending()
-  local state = M.pending_confirmation
-  if not state then
-    ui.append_to_chat({ "", "No pending change preview to apply.", "", "---", "" })
-    return
-  end
-
-  if not (state.source_buf and vim.api.nvim_buf_is_valid(state.source_buf)) then
-    M.pending_confirmation = nil
-    ui.append_to_chat({ "", "⚠️ Pending preview target buffer is no longer valid.", "", "---", "" })
-    return
-  end
-
-  vim.api.nvim_buf_clear_namespace(state.source_buf, state.ns, 0, -1)
-  vim.api.nvim_buf_set_lines(state.source_buf, 0, -1, false, state.new_lines)
-  M.pending_confirmation = nil
-  state.on_apply()
-end
-
-function M.skip_pending()
-  local state = M.pending_confirmation
-  if not state then
-    ui.append_to_chat({ "", "No pending change preview to skip.", "", "---", "" })
-    return
-  end
-
-  clear_preview_state(state, true)
-  state.on_skip()
-end
-
-function M.refresh_pending_preview()
-  local state = M.pending_confirmation
-  if not state then
-    return
-  end
-
-  if not (state.source_buf and vim.api.nvim_buf_is_valid(state.source_buf)) then
-    M.pending_confirmation = nil
-    return
-  end
-
-  render_preview_extmarks(state.source_buf, state.ns, state.old_lines, state.new_lines)
-end
-
-local function with_apply_confirmation(source_buf, new_code, on_apply, on_skip)
-  vim.schedule(function()
-    if M.pending_confirmation then
-      clear_preview_state(M.pending_confirmation, true)
-    end
-
-    local old_text = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-
-    local old_lines = vim.split(old_text, "\n", { plain = true })
-    local new_lines = vim.split(new_code, "\n", { plain = true })
-
-    local ns = vim.api.nvim_create_namespace("CopilotChatPreview")
-    vim.api.nvim_buf_clear_namespace(source_buf, ns, 0, -1)
-
-    -- Preview now shows only final file content.
-    vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, new_lines)
-
-    render_preview_extmarks(source_buf, ns, old_lines, new_lines)
-
-    M.pending_confirmation = {
-      source_buf = source_buf,
-      old_lines = old_lines,
-      new_lines = new_lines,
-      ns = ns,
-      on_apply = on_apply,
-      on_skip = on_skip,
-    }
-
-    ui.append_to_chat({
-      "",
-      "Preview ready (non-blocking).",
-      "Use :CopilotChatApply to accept or :CopilotChatSkip to discard.",
-    })
-    vim.cmd("redraw")
-  end)
-end
-
-local function build_messages_for_request(prompt, auto_apply)
-  local messages = vim.deepcopy(M.history)
-
-  if not auto_apply then
-    return messages
-  end
-
-  local source_buf, err = get_source_buf()
-  if not source_buf then
-    return messages
-  end
-
-  -- Target file context only added to the *latest* user prompt
-  -- We don't want to re-inject full file history or system instructions repeatedly into the chat history.
-  local path = vim.api.nvim_buf_get_name(source_buf)
-  local content = table.concat(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), "\n")
-  
-  local rule = "You are an AI programming assistant in Neovim.\nIf the user asks you to modify/write/refactor the current file, output the COMPLETE updated file in a single fenced code block starting EXACTLY with ```UPDATE\n...content...\n```. Do not provide any other text."
-  
-  -- The last message is the current prompt, replace its content
-  local last_idx = #messages
-  if messages[last_idx] and messages[last_idx].role == "user" then
-    messages[last_idx].content = rule .. "\n\nTarget file: " .. path .. "\n\nCurrent file content:\n```\n" .. content .. "\n```\n\nRequested change/question: " .. prompt
-  end
-
-  return messages
-end
-
---- Setup function to initialize the plugin
---- @param opts table|nil User configuration options
-function M.setup(opts)
-  opts = opts or {}
-
-  -- Backward-compatible aliases for legacy option names.
-  if opts.auto_apply_edits ~= nil and opts.enable_edit_requests == nil then
-    opts.enable_edit_requests = opts.auto_apply_edits
-  end
-  if opts.auto_apply_confirm ~= nil and opts.confirm_before_apply == nil then
-    opts.confirm_before_apply = opts.auto_apply_confirm
-  end
-
-  opts.auto_apply_edits = nil
-  opts.auto_apply_confirm = nil
-
-  M.config = vim.tbl_deep_extend("force", M.config, opts)
-
-  local group = vim.api.nvim_create_augroup("CopilotChatPreviewResize", { clear = true })
-  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
-    group = group,
-    callback = function()
-      M.refresh_pending_preview()
+  local accumulated = ""
+  M._current_job = api.stream(message, M.session_id, {
+    on_chunk = function(chunk)
+      accumulated = accumulated .. chunk
+      vim.schedule(function()
+        if on_text then on_text(chunk) end
+      end)
+    end,
+    on_error = function(err)
+      vim.schedule(function()
+        ui.append_chat({ "", "> ⚠️ " .. err })
+      end)
+    end,
+    on_done = function(final_text)
+      vim.schedule(function()
+        ui.set_busy(false)
+        M._current_job = nil
+        if on_done then on_done(accumulated ~= "" and accumulated or (final_text or "")) end
+      end)
     end,
   })
 end
 
---- Open the chat window
-function M.open()
-  ui.open()
-  ensure_chat_history()
+local function source_file_buf()
+  local buf = ui.get_source_buf()
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return nil, "No source buffer found."
+  end
+  if vim.bo[buf].buftype ~= "" then
+    return nil, "Active source buffer is not a file."
+  end
+  return buf, nil
 end
 
-local function submit_prompt(prompt)
-  if not prompt or prompt:match("^%s*$") then
+local function extract_fence(text, tag)
+  if not text or text == "" then return nil end
+  local pat = "```" .. tag .. "\n(.-)\n```"
+  local _, _, body = text:find(pat)
+  if body then return body end
+  -- Fallback: any fenced block.
+  local _, _, generic = text:find("```[%w%-_]*\n(.-)\n```")
+  return generic
+end
+
+local function append_user_message(label, text)
+  ui.append_chat({ "", "### " .. label, "" })
+  ui.append_chat(vim.split(text, "\n", { plain = true }))
+end
+
+local function open_assistant_block()
+  ui.append_chat({ "", "### Copilot", "" })
+end
+
+local function close_message_block()
+  ui.append_chat({ "", "---", "" })
+end
+
+local function submit_chat(prompt)
+  if not prompt or prompt:gsub("%s+", "") == "" then return end
+  if ui.is_busy() then
+    ui.append_chat({ "", "> ⚠️ A reply is still streaming. Wait or run :CopilotChatCancel.", "" })
     return
   end
 
-  ui.append_to_chat({ "", "### You", "" })
-  ui.append_to_chat(vim.split(prompt, "\n", { plain = true }))
-  table.insert(M.history, { role = "user", content = prompt })
+  append_user_message("You", prompt)
+  open_assistant_block()
+  ui.clear_input()
 
-  ui.append_to_chat({ "", "### Copilot", "" })
-
-  local assistant_text = ""
-  local auto_apply = should_auto_apply(prompt)
-  local request_messages = build_messages_for_request(prompt, auto_apply)
-
-  api.stream_response(request_messages, function(chunk)
-    assistant_text = assistant_text .. chunk
-    ui.stream_to_chat(chunk)
-  end, function(final_text)
-    if final_text and final_text ~= "" then
-      assistant_text = final_text
-    end
-    if assistant_text ~= "" then
-      table.insert(M.history, { role = "assistant", content = assistant_text })
-    end
-
-    if auto_apply then
-      local code = extract_code_block(assistant_text)
-      if code then
-        local source_buf, err = get_source_buf()
-        if not source_buf then
-          ui.append_to_chat({ "", "⚠️ Auto-apply failed: " .. err })
-        else
-          local apply = function(already_applied)
-            if already_applied then
-              ui.append_to_chat({ "", "Applied changes to: " .. vim.api.nvim_buf_get_name(source_buf) })
-            else
-              local ok, info = apply_to_source_buffer(source_buf, code)
-              if ok then
-                ui.append_to_chat({ "", "Applied changes to: " .. info })
-              else
-                ui.append_to_chat({ "", "⚠️ Auto-apply failed: " .. info })
-              end
-            end
-            ui.append_to_chat({ "", "---", "" })
-          end
-
-          local skip = function()
-            ui.append_to_chat({ "", "Skipped applying changes." })
-            ui.append_to_chat({ "", "---", "" })
-          end
-
-          if M.config.confirm_before_apply then
-            with_apply_confirmation(source_buf, code, function()
-              apply(true)
-            end, skip)
-            return
-          end
-
-          apply(false)
-        end
-      else
-        ui.append_to_chat({ "", "⚠️ Auto-apply skipped: model did not return a fenced code block." })
-      end
-    end
-
-    ui.append_to_chat({ "", "---", "" })
+  send(prompt, function(chunk)
+    ui.stream_chat(chunk)
+  end, function()
+    close_message_block()
   end)
 end
+
+local function submit_edit(prompt, range)
+  if not prompt or prompt:gsub("%s+", "") == "" then return end
+  if ui.is_busy() then
+    ui.append_chat({ "", "> ⚠️ A reply is still streaming. Wait or run :CopilotChatCancel.", "" })
+    return
+  end
+
+  local source_buf, err = source_file_buf()
+  if not source_buf then
+    ui.append_chat({ "", "> ⚠️ " .. err, "" })
+    return
+  end
+
+  local path = vim.api.nvim_buf_get_name(source_buf)
+  local file_lines = vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
+  local file_body = table.concat(file_lines, "\n")
+
+  local selection = ""
+  if range and range.start_line and range.end_line and range.end_line >= range.start_line then
+    local sel_lines = vim.api.nvim_buf_get_lines(source_buf, range.start_line - 1, range.end_line, false)
+    selection = table.concat(sel_lines, "\n")
+  end
+
+  local tag = M.config.edit_fence_tag or "UPDATE"
+  local instructions = table.concat({
+    "You are editing a file inside Neovim.",
+    "Return the COMPLETE updated file content in a single fenced code block opening with ```" .. tag .. " and closing with ```.",
+    "Do not add explanation outside the code block. Preserve existing indentation style.",
+    "",
+    "Target file: " .. path,
+    "",
+    "Current file content:",
+    "```",
+    file_body,
+    "```",
+  }, "\n")
+
+  if selection ~= "" then
+    instructions = instructions .. "\n\nFocus on this selection (lines " .. range.start_line .. "-" .. range.end_line .. "):\n```\n" .. selection .. "\n```"
+  end
+
+  instructions = instructions .. "\n\nRequested change:\n" .. prompt
+
+  append_user_message("You (edit)", prompt)
+  open_assistant_block()
+  ui.clear_input()
+
+  send(instructions, function(chunk)
+    ui.stream_chat(chunk)
+  end, function(full)
+    local code = extract_fence(full, tag)
+    if not code then
+      ui.append_chat({ "", "> ⚠️ Edit failed: model did not return a fenced `" .. tag .. "` block.", "" })
+      close_message_block()
+      return
+    end
+
+    diff.preview(source_buf, code,
+      function()
+        ui.append_chat({ "", "Applied changes to: " .. vim.api.nvim_buf_get_name(source_buf), "" })
+        close_message_block()
+      end,
+      function()
+        ui.append_chat({ "", "Skipped pending edit.", "" })
+        close_message_block()
+      end
+    )
+
+    ui.append_chat({
+      "",
+      "Preview ready. :CopilotChatApply to accept or :CopilotChatSkip to discard.",
+    })
+  end)
+end
+
+function M.setup(opts)
+  M.config = vim.tbl_deep_extend("force", M.config, opts or {})
+
+  ui.set_submit_handler(function(text)
+    submit_chat(text)
+  end)
+
+  local group = vim.api.nvim_create_augroup("CopilotChatPreviewResize", { clear = true })
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+    group = group,
+    callback = function() diff.refresh() end,
+  })
+end
+
+function M.open()  ui.open()  end
+function M.close() ui.close() end
+function M.toggle() ui.toggle() end
+function M.focus_input() ui.focus_input() end
 
 function M.ask()
-  ensure_chat_history()
-  ui.prompt_input(function(prompt)
-    submit_prompt(prompt)
-  end)
-end
-
---- Start GitHub account login flow for GitHub Models access
-function M.login()
   ui.open()
-  ui.append_to_chat({ "", "### Copilot", "" })
-  api.login(function(chunk)
-    ui.stream_to_chat(chunk)
-  end, function()
-    ui.append_to_chat({ "", "---", "" })
-  end)
+  ui.focus_input()
 end
 
---- Submit the current prompt from the input buffer
-function M.submit()
-  M.ask()
+--- Submit the current input window contents as a chat message.
+function M._submit_input()
+  local text = ui.input_text()
+  if text == "" or text:gsub("%s+", "") == "" then return end
+  submit_chat(text)
+end
+
+--- Send a chat prompt non-interactively (e.g. from a command).
+function M.send_prompt(prompt)
+  ui.open()
+  submit_chat(prompt)
+end
+
+--- Edit the current source buffer with optional line range and explicit prompt.
+function M.edit(prompt, range)
+  ui.open()
+  if not prompt or prompt == "" then
+    prompt = ui.input_text()
+  end
+  submit_edit(prompt, range)
+end
+
+function M.apply_pending()
+  local ok, err = diff.apply()
+  if not ok then ui.append_chat({ "", "> " .. err, "" }) end
+end
+
+function M.skip_pending()
+  local ok, err = diff.skip()
+  if not ok then ui.append_chat({ "", "> " .. err, "" }) end
+end
+
+function M.cancel()
+  if M._current_job then
+    pcall(vim.fn.jobstop, M._current_job)
+    M._current_job = nil
+    ui.set_busy(false)
+    ui.append_chat({ "", "> Cancelled.", "" })
+  end
+end
+
+function M.new_session()
+  if M._current_job then M.cancel() end
+  M.session_id = api.new_session_id()
+  M._first_turn = true
+  ui.set_chat_lines({
+    "# Copilot Chat",
+    "",
+    "(new session: " .. M.session_id .. ")",
+    "",
+    "---",
+  })
+end
+
+function M.login()
+  if not api.cli_available() then
+    vim.notify("Copilot CLI not installed. Run: npm install -g @github/copilot", vim.log.levels.ERROR)
+    return
+  end
+  vim.cmd("botright split | resize 15 | terminal copilot login")
+  vim.cmd("startinsert")
 end
 
 return M
