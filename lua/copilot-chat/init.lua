@@ -9,6 +9,10 @@ M.config = {
   system_prompt = nil,
   edit_fence_tag = "UPDATE",
   default_keymaps = false,
+  -- Inject a per-turn guidance block telling Copilot to prefer editing the
+  -- active file and avoid creating new files unless asked. Soft nudge only —
+  -- file tools remain available. Set false for full agent freedom.
+  prefer_in_place_edits = true,
 }
 
 M.session_id = nil
@@ -97,6 +101,17 @@ end
 
 local function context_preamble(ctx, range, hint_workspace)
   local parts = {}
+
+  if M.config.prefer_in_place_edits then
+    table.insert(parts, "[Guidance]")
+    table.insert(parts, "- The user is editing inside Neovim. Their canonical edit flow is :CopilotChatEdit, which captures a fenced code block from your reply and shows them a diff preview to accept or reject.")
+    table.insert(parts, "- Strongly prefer editing files in place. Avoid creating new files unless the user explicitly asks for one, or the change has no sensible home in any existing file.")
+    table.insert(parts, "- For modifications, prefer returning a fenced code block in your reply over invoking the write tool — this keeps the user in control of what lands on disk.")
+    table.insert(parts, "- If you're unsure whether a request wants an in-place edit or a new file, ask before acting.")
+    table.insert(parts, "[End of guidance]")
+    table.insert(parts, "")
+  end
+
   table.insert(parts, "[Editor context]")
   table.insert(parts, "cwd: " .. ctx.cwd)
   if hint_workspace then

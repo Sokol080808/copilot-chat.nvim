@@ -109,6 +109,10 @@ require("copilot-chat").setup({
   edit_fence_tag = "UPDATE",
   -- Install <leader>c{c,a,i,f,n} mappings.
   default_keymaps = false,
+  -- Add a per-turn guidance block telling Copilot to prefer editing the
+  -- active file and avoid creating new files unless asked. Soft nudge —
+  -- file tools stay available. Set false for full agent freedom.
+  prefer_in_place_edits = true,
 })
 ```
 
