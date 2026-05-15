@@ -115,6 +115,51 @@ function M.expand_file_refs(text, base_dir)
   return resolved, refs
 end
 
+local function looks_like_path(s)
+  if not s or s == "" then return false end
+  if s:find("/", 1, true) then return true end
+  if s:sub(1, 1) == "." then return true end          -- .gitignore, .env
+  if s:match("^[%w_%-]+%.[%w%-]+$") then return true end -- foo.lua, README.md
+  return false
+end
+
+local function parse_info(info)
+  info = vim.trim(info or "")
+  if info == "" then return nil, nil end
+
+  -- "lang filename" or "lang:filename"
+  local first, rest = info:match("^([^%s:]+)[%s:]+(.+)$")
+  if first and rest then
+    rest = vim.trim(rest)
+    if looks_like_path(rest) then
+      return first, rest
+    end
+  end
+
+  if looks_like_path(info) then
+    return nil, info
+  end
+
+  return info, nil  -- bare language tag
+end
+
+--- Parse fenced code blocks out of an assistant reply.
+--- Returns a list of { info, lang, filename, content }.
+function M.extract_code_blocks(text)
+  if type(text) ~= "string" or text == "" then return {} end
+  local blocks = {}
+  for info, content in text:gmatch("```([^\n]*)\n(.-)\n```") do
+    local lang, filename = parse_info(info)
+    table.insert(blocks, {
+      info = info,
+      lang = lang,
+      filename = filename,
+      content = content,
+    })
+  end
+  return blocks
+end
+
 --- Detect (and strip) an `@workspace` token. The CLI already has filesystem
 --- access; this just nudges the model in the system preamble.
 function M.expand_workspace(text)

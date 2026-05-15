@@ -7,7 +7,6 @@ local M = {}
 
 M.config = {
   system_prompt = nil,
-  edit_fence_tag = "UPDATE",
   default_keymaps = false,
   -- Send a one-shot guide file (default: the bundled GUIDE.md) on the first
   -- user message of a session. The CLI keeps it in conversation memory via
@@ -201,12 +200,44 @@ local function source_file_buf()
   return buf, nil
 end
 
-local function extract_fence(text, tag)
-  if not text or text == "" then return nil end
-  local _, _, body = text:find("```" .. tag .. "\n(.-)\n```")
-  if body then return body end
-  local _, _, generic = text:find("```[%w%-_]*\n(.-)\n```")
-  return generic
+local function resolve_target_path(path, cwd)
+  if not path or path == "" then return nil end
+  if path:sub(1, 1) == "/" then
+    return vim.fn.fnamemodify(path, ":p")
+  end
+  return vim.fn.fnamemodify((cwd or vim.fn.getcwd()) .. "/" .. path, ":p")
+end
+
+--- Find (or load) a buffer for a given absolute path.
+local function buffer_for_path(abs)
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf) and vim.api.nvim_buf_get_name(buf) == abs then
+      return buf
+    end
+  end
+  local buf = vim.fn.bufadd(abs)
+  if buf == 0 then return nil end
+  vim.fn.bufload(buf)
+  return buf
+end
+
+--- Make sure `buf` is visible in some window. Prefers the chat's source window;
+--- otherwise opens a vertical split next to the chat. Returns the window id.
+local function ensure_visible(buf)
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(w) == buf then return w end
+  end
+  if ui.source_win and vim.api.nvim_win_is_valid(ui.source_win) then
+    vim.api.nvim_win_set_buf(ui.source_win, buf)
+    ui.source_buf = buf
+    return ui.source_win
+  end
+  vim.cmd("topleft vsplit")
+  local w = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(w, buf)
+  ui.source_win = w
+  ui.source_buf = buf
+  return w
 end
 
 local function append_user_message(label, text)
@@ -305,95 +336,50 @@ local function submit_chat(prompt, range)
   local preamble = context_preamble(ctx, range, has_workspace)
   local final_prompt = preamble .. "\n\n" .. body
 
-  send(final_prompt, ui.stream_chat, function()
-    close_message_block()
-  end, {
-    cwd = ctx.cwd,
-    add_dirs = extra_dirs_for(ctx.open, ctx.cwd),
-  })
-end
-
-local function submit_edit(prompt, range)
-  if not prompt or vim.trim(prompt) == "" then return end
-  if reject_if_busy() then return end
-
-  local source_buf, err = source_file_buf()
-  if not source_buf then
-    ui.append_chat({ "", "> ⚠️ " .. err, "" })
-    return
-  end
-
-  local path = vim.api.nvim_buf_get_name(source_buf)
-  local label = short_path(path)
-  local file_lines = vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
-  local file_body = table.concat(file_lines, "\n")
-
-  local selection = ""
-  if range and range.start_line and range.end_line and range.end_line >= range.start_line then
-    local sel_lines = vim.api.nvim_buf_get_lines(source_buf, range.start_line - 1, range.end_line, false)
-    selection = table.concat(sel_lines, "\n")
-  end
-
-  local tag = M.config.edit_fence_tag or "UPDATE"
-  local instructions = table.concat({
-    "You are editing a file inside Neovim via the plugin's diff-preview flow.",
-    "DO NOT use write/edit/file-modification tools — they are disabled for this request. The user wants to review the change before it lands on disk.",
-    "Return the COMPLETE updated file content in a single fenced code block opening with ```" .. tag .. " and closing with ```. Nothing else. No prose. No explanation. The plugin will extract that block, overlay an inline diff in the user's buffer, and they will accept or reject it with :CopilotChatApply / :CopilotChatSkip.",
-    "Preserve the existing indentation style and only change what the request asks for — leave unrelated lines exactly as they are.",
-    "",
-    "Target file: " .. path,
-    "",
-    "Current file content:",
-    "```",
-    file_body,
-    "```",
-  }, "\n")
-
-  if selection ~= "" then
-    instructions = instructions .. "\n\nFocus on this selection (lines " .. range.start_line .. "-" .. range.end_line .. "):\n```\n" .. selection .. "\n```"
-  end
-
-  local ctx = ui.get_editor_context()
-  local others = {}
-  for _, p in ipairs(ctx.open or {}) do
-    if p ~= path then table.insert(others, "  - " .. short_path(p)) end
-  end
-  if #others > 0 then
-    instructions = instructions
-      .. "\n\nOther files currently open in the user's editor (use the view tool to read any of them if needed):\n"
-      .. table.concat(others, "\n")
-  end
-
-  instructions = instructions .. "\n\nRequested change:\n" .. prompt
-
-  append_user_message("You (edit)", prompt)
-  ui.append_chat({ "", "> ✏️ Generating edit for `" .. label .. "`…" })
-  ui.clear_input()
-
-  send(instructions, nil, function(full)
-    local code = extract_fence(full, tag)
-    if not code then
-      ui.append_chat({ "", "> ⚠️ Edit failed: model did not return a fenced `" .. tag .. "` block." })
-      close_message_block()
-      return
+  send(final_prompt, ui.stream_chat, function(full)
+    local blocks = prompt_mod.extract_code_blocks(full)
+    local tagged = {}
+    for _, b in ipairs(blocks) do
+      if b.filename then table.insert(tagged, b) end
     end
 
-    local added, removed = diff_stats(file_body, code)
-    if added == 0 and removed == 0 then
-      ui.append_chat({ "", "> ℹ️ Model returned the file unchanged — nothing to preview." })
-      close_message_block()
-      return
+    if #tagged > 0 then
+      local first = tagged[1]
+      local abs = resolve_target_path(first.filename, ctx.cwd)
+      local buf = abs and buffer_for_path(abs) or nil
+
+      if not buf or not vim.api.nvim_buf_is_valid(buf) then
+        ui.append_chat({ "", "> ⚠️ Could not open `" .. first.filename .. "` to preview." })
+      else
+        local label = short_path(abs)
+        local file_body = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+        local added, removed = diff_stats(file_body, first.content)
+
+        if added == 0 and removed == 0 then
+          ui.append_chat({ "", "> ℹ️ Proposed change for `" .. label .. "` is identical to the current file." })
+        else
+          ensure_visible(buf)
+          diff.preview(buf, first.content,
+            function() ui.append_chat({ "", "> ✅ Applied to `" .. label .. "`." }) end,
+            function() ui.append_chat({ "", "> ↩️ Skipped `" .. label .. "`." }) end
+          )
+          ui.append_chat({
+            "",
+            "> ✏️ Edit ready for `" .. label .. "` (+" .. added .. " / -" .. removed
+              .. "). `:CopilotChatApply` to accept, `:CopilotChatSkip` to discard.",
+          })
+        end
+      end
+
+      if #tagged > 1 then
+        ui.append_chat({
+          "",
+          "> ℹ️ " .. (#tagged - 1) .. " more filename-tagged block(s) in this reply weren't auto-applied. "
+            .. "Ask Copilot to propose them one at a time after handling this one.",
+        })
+      end
     end
 
-    diff.preview(source_buf, code,
-      function() ui.append_chat({ "", "> ✅ Applied to `" .. label .. "`." }) end,
-      function() ui.append_chat({ "", "> ↩️ Skipped." }) end
-    )
-
-    ui.append_chat({
-      "",
-      "> ✏️ Edit ready (+" .. added .. " / -" .. removed .. "). `:CopilotChatApply` to accept, `:CopilotChatSkip` to discard.",
-    })
     close_message_block()
   end, {
     cwd = ctx.cwd,
@@ -407,8 +393,6 @@ local function install_default_keymaps()
   set({ "n" }, "<leader>cc", "<cmd>CopilotChat<CR>",          { silent = true, desc = "Toggle Copilot chat" })
   set({ "n" }, "<leader>ca", "<cmd>CopilotChatAsk<CR>",       { silent = true, desc = "Copilot chat: ask" })
   set({ "v" }, "<leader>ca", ":CopilotChatAsk ",              { silent = false, desc = "Copilot chat: ask about selection" })
-  set({ "n" }, "<leader>ci", ":CopilotChatEdit ",             { silent = false, desc = "Copilot edit current file" })
-  set({ "v" }, "<leader>ci", ":CopilotChatEdit ",             { silent = false, desc = "Copilot edit selection" })
   set({ "n" }, "<leader>cf", "<cmd>CopilotChatFixDiagnostic<CR>", { silent = true, desc = "Copilot fix diagnostic at cursor" })
   set({ "n" }, "<leader>cn", "<cmd>CopilotChatNew<CR>",       { silent = true, desc = "Copilot new chat session" })
 end
@@ -446,14 +430,6 @@ end
 function M.send_prompt(prompt, range)
   ui.open()
   submit_chat(prompt, range)
-end
-
-function M.edit(prompt, range)
-  ui.open()
-  if not prompt or prompt == "" then
-    prompt = ui.input_text()
-  end
-  submit_edit(prompt, range)
 end
 
 function M.apply_pending()
@@ -557,10 +533,11 @@ function M.fix_diagnostic()
       .. ": " .. (d.message or ""))
   end
 
-  local p = "Fix the following diagnostics in this file (" .. scope .. "):\n"
+  local path = vim.api.nvim_buf_get_name(source_buf)
+  local p = "Fix the following diagnostics in `" .. short_path(path) .. "` (" .. scope .. "):\n"
     .. table.concat(descs, "\n")
-    .. "\n\nMake the smallest change that resolves them. Don't drift into unrelated edits."
-  M.edit(p, nil)
+    .. "\n\nMake the smallest change that resolves them. Reply with the updated file as a filename-tagged fenced code block."
+  M.send_prompt(p, nil)
 end
 
 M.slash_commands = prompt_mod.slash_commands

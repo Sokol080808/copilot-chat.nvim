@@ -45,7 +45,6 @@ use({
 | `:CopilotChatOpen`            | Open the chat panel.                                                 |
 | `:CopilotChatClose`           | Close the chat panel.                                                |
 | `:CopilotChatAsk`             | Focus the input (or `:CopilotChatAsk <prompt>` to send; range OK).   |
-| `:CopilotChatEdit`            | Edit current buffer; accepts a range and an optional prompt.         |
 | `:CopilotChatExplain`         | `/explain` shortcut. Range OK.                                       |
 | `:CopilotChatTests`           | `/tests` shortcut. Range OK.                                         |
 | `:CopilotChatFix`             | `/fix` shortcut. Range OK.                                           |
@@ -82,22 +81,26 @@ Set `default_keymaps = true` in `setup()` to install:
 | -------------- | ------------------------------------- |
 | `<leader>cc`   | Toggle chat                           |
 | `<leader>ca`   | Ask (visual: ask about selection)     |
-| `<leader>ci`   | Edit current file (visual: selection) |
 | `<leader>cf`   | Fix diagnostic at cursor              |
 | `<leader>cn`   | New session                           |
 
-## Edit flow
+## How code changes get applied
 
-```vim
-:CopilotChatEdit add a docstring to this function
-" or with a visual range:
-:'<,'>CopilotChatEdit refactor this block to use early returns
-```
+There is no separate "edit" command — every chat reply that proposes a change goes through the same diff-preview pipeline:
 
-1. The plugin sends the file (and the selected range, if any) to Copilot.
-2. The model is instructed to return the complete updated file in a `` ```UPDATE `` fenced block.
-3. The new content is shown inline in the source buffer with `DiffAdd` / `DiffChange` highlights and `DiffDelete` virtual lines for removed text.
-4. `:CopilotChatApply` keeps the change. `:CopilotChatSkip` restores the original.
+1. You ask in chat (`:CopilotChatAsk`, a slash command, anything).
+2. Copilot is told (via the bundled `GUIDE.md`) that the `write` tool is disabled and that file changes must come back as **filename-tagged fenced code blocks**, like:
+
+       ```lua lua/foo.lua
+       <complete updated file>
+       ```
+
+3. The plugin parses Copilot's reply, finds the tagged block, opens (or loads) the target buffer, and installs an inline diff preview with `DiffAdd` / `DiffChange` highlights plus `DiffDelete` virtual lines for removed text.
+4. `:CopilotChatApply` accepts; `:CopilotChatSkip` rejects and restores the original.
+
+Untagged code blocks (` ```python `, no filename) are treated as illustrative — they show up in chat but don't trigger the preview. Inline backticks behave normally.
+
+If Copilot returns multiple filename-tagged blocks in one reply, the plugin previews the first and notes the rest in chat — ask for them one at a time.
 
 ## Configuration
 
@@ -105,9 +108,7 @@ Set `default_keymaps = true` in `setup()` to install:
 require("copilot-chat").setup({
   -- Prepended to the very first user message in a session. nil disables.
   system_prompt = nil,
-  -- Fence tag the model is asked to use for whole-file replacements.
-  edit_fence_tag = "UPDATE",
-  -- Install <leader>c{c,a,i,f,n} mappings.
+  -- Install <leader>c{c,a,f,n} mappings.
   default_keymaps = false,
   -- Load a guide file (default: the plugin's bundled GUIDE.md) and prepend
   -- it to the first user message of every session. The CLI keeps it in

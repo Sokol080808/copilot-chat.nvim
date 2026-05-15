@@ -23,14 +23,6 @@ cmd("CopilotChatAsk", function(opts)
   end
 end, { nargs = "?", range = true })
 
-cmd("CopilotChatEdit", function(opts)
-  local range = nil
-  if opts.range and opts.range > 0 then
-    range = { start_line = opts.line1, end_line = opts.line2 }
-  end
-  require("copilot-chat").edit(opts.args, range)
-end, { nargs = "?", range = true })
-
 cmd("CopilotChatNew",    function() require("copilot-chat").new_session() end)
 cmd("CopilotChatApply",  function() require("copilot-chat").apply_pending() end)
 cmd("CopilotChatSkip",   function() require("copilot-chat").skip_pending() end)
