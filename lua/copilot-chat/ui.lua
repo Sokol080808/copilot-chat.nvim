@@ -1,16 +1,18 @@
 local api = vim.api
 
+local INPUT_WINBAR_IDLE = "Copilot > prompt (C-s send / CR send / q close)"
+local INPUT_WINBAR_BUSY = "Copilot is replying… (Esc to keep typing — submission disabled)"
+
 local M = {
   chat_buf = nil,
   chat_win = nil,
   input_buf = nil,
   input_win = nil,
   source_buf = nil,
-  source_win = nil,
   busy = false,
   width = 60,
   input_height = 6,
-  on_submit = nil,
+  _streaming = false,
 }
 
 local CHAT_HEADER = {
@@ -21,12 +23,33 @@ local CHAT_HEADER = {
   "---",
 }
 
+local COMMON_WIN_OPTS = {
+  wrap = true,
+  linebreak = true,
+  number = false,
+  relativenumber = false,
+  signcolumn = "no",
+  winfixwidth = true,
+}
+
+local function set_win_opts(win, overrides)
+  for name, value in pairs(COMMON_WIN_OPTS) do
+    api.nvim_set_option_value(name, value, { win = win })
+  end
+  if overrides then
+    for name, value in pairs(overrides) do
+      api.nvim_set_option_value(name, value, { win = win })
+    end
+  end
+end
+
 local function make_chat_buffer()
   local buf = api.nvim_create_buf(false, true)
   api.nvim_set_option_value("filetype", "markdown", { buf = buf })
   api.nvim_set_option_value("buftype", "nofile", { buf = buf })
   api.nvim_set_option_value("swapfile", false, { buf = buf })
   api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
+  api.nvim_set_option_value("modifiable", false, { buf = buf })
   api.nvim_buf_set_name(buf, "[CopilotChat]")
   return buf
 end
@@ -41,46 +64,25 @@ local function make_input_buffer()
   return buf
 end
 
-local function set_chat_window_options(win)
-  api.nvim_set_option_value("wrap", true, { win = win })
-  api.nvim_set_option_value("linebreak", true, { win = win })
-  api.nvim_set_option_value("number", false, { win = win })
-  api.nvim_set_option_value("relativenumber", false, { win = win })
-  api.nvim_set_option_value("signcolumn", "no", { win = win })
-  api.nvim_set_option_value("foldcolumn", "0", { win = win })
-  api.nvim_set_option_value("winfixwidth", true, { win = win })
-end
-
-local function set_input_window_options(win)
-  api.nvim_set_option_value("wrap", true, { win = win })
-  api.nvim_set_option_value("linebreak", true, { win = win })
-  api.nvim_set_option_value("number", false, { win = win })
-  api.nvim_set_option_value("relativenumber", false, { win = win })
-  api.nvim_set_option_value("signcolumn", "no", { win = win })
-  api.nvim_set_option_value("winfixheight", true, { win = win })
-  api.nvim_set_option_value("winfixwidth", true, { win = win })
-  pcall(api.nvim_set_option_value, "winbar", "Copilot > prompt (C-s send / CR send / q close)", { win = win })
+local function map(buf, mode, lhs, target)
+  api.nvim_buf_set_keymap(buf, mode, lhs,
+    "<cmd>lua require('copilot-chat')." .. target .. "()<CR>",
+    { noremap = true, silent = true })
 end
 
 local function bind_input_keys(buf)
-  local function submit_lua()
-    return "<cmd>lua require('copilot-chat')._submit_input()<CR>"
-  end
-  local function close_lua()
-    return "<cmd>lua require('copilot-chat').close()<CR>"
-  end
-  local opts = { noremap = true, silent = true }
-  api.nvim_buf_set_keymap(buf, "i", "<C-s>", "<Esc>" .. submit_lua(), opts)
-  api.nvim_buf_set_keymap(buf, "n", "<CR>",  submit_lua(), opts)
-  api.nvim_buf_set_keymap(buf, "n", "q",     close_lua(),  opts)
+  api.nvim_buf_set_keymap(buf, "i", "<C-s>",
+    "<Esc><cmd>lua require('copilot-chat')._submit_input()<CR>",
+    { noremap = true, silent = true })
+  map(buf, "n", "<CR>", "_submit_input")
+  map(buf, "n", "q",    "close")
 end
 
 local function bind_chat_keys(buf)
-  local opts = { noremap = true, silent = true }
-  api.nvim_buf_set_keymap(buf, "n", "q", "<cmd>lua require('copilot-chat').close()<CR>", opts)
-  api.nvim_buf_set_keymap(buf, "n", "i", "<cmd>lua require('copilot-chat').focus_input()<CR>", opts)
-  api.nvim_buf_set_keymap(buf, "n", "a", "<cmd>lua require('copilot-chat').focus_input()<CR>", opts)
-  api.nvim_buf_set_keymap(buf, "n", "<CR>", "<cmd>lua require('copilot-chat').focus_input()<CR>", opts)
+  map(buf, "n", "q",    "close")
+  map(buf, "n", "i",    "focus_input")
+  map(buf, "n", "a",    "focus_input")
+  map(buf, "n", "<CR>", "focus_input")
 end
 
 local function ensure_chat_buf()
@@ -108,11 +110,8 @@ function M.open()
     return
   end
 
-  local current_win = api.nvim_get_current_win()
-  local current_buf = api.nvim_win_get_buf(current_win)
-  if not (M.chat_buf and current_buf == M.chat_buf)
-    and not (M.input_buf and current_buf == M.input_buf) then
-    M.source_win = current_win
+  local current_buf = api.nvim_get_current_buf()
+  if current_buf ~= M.chat_buf and current_buf ~= M.input_buf then
     M.source_buf = current_buf
   end
 
@@ -123,13 +122,13 @@ function M.open()
   M.chat_win = api.nvim_get_current_win()
   api.nvim_win_set_buf(M.chat_win, M.chat_buf)
   api.nvim_win_set_width(M.chat_win, M.width)
-  set_chat_window_options(M.chat_win)
+  set_win_opts(M.chat_win, { foldcolumn = "0" })
 
   vim.cmd("belowright split")
   M.input_win = api.nvim_get_current_win()
   api.nvim_win_set_buf(M.input_win, M.input_buf)
   api.nvim_win_set_height(M.input_win, M.input_height)
-  set_input_window_options(M.input_win)
+  set_win_opts(M.input_win, { winfixheight = true, winbar = INPUT_WINBAR_IDLE })
 
   M.scroll_chat_to_bottom()
   api.nvim_set_current_win(M.input_win)
@@ -173,23 +172,45 @@ function M.scroll_chat_to_bottom()
   pcall(api.nvim_win_set_cursor, M.chat_win, { n, 0 })
 end
 
-local function with_modifiable(buf, fn)
-  api.nvim_set_option_value("modifiable", true, { buf = buf })
+local function set_chat_modifiable(value)
+  if M.chat_buf and api.nvim_buf_is_valid(M.chat_buf) then
+    api.nvim_set_option_value("modifiable", value, { buf = M.chat_buf })
+  end
+end
+
+local function with_modifiable(fn)
+  if M._streaming then
+    fn()
+    return
+  end
+  set_chat_modifiable(true)
   local ok, err = pcall(fn)
-  api.nvim_set_option_value("modifiable", false, { buf = buf })
+  set_chat_modifiable(false)
   if not ok then error(err) end
+end
+
+function M.begin_stream()
+  ensure_chat_buf()
+  M._streaming = true
+  set_chat_modifiable(true)
+end
+
+function M.end_stream()
+  if not M._streaming then return end
+  M._streaming = false
+  set_chat_modifiable(false)
 end
 
 function M.set_chat_lines(lines)
   ensure_chat_buf()
-  with_modifiable(M.chat_buf, function()
+  with_modifiable(function()
     api.nvim_buf_set_lines(M.chat_buf, 0, -1, false, lines)
   end)
 end
 
 function M.append_chat(lines)
   ensure_chat_buf()
-  with_modifiable(M.chat_buf, function()
+  with_modifiable(function()
     local n = api.nvim_buf_line_count(M.chat_buf)
     api.nvim_buf_set_lines(M.chat_buf, n, n, false, lines)
   end)
@@ -199,7 +220,7 @@ end
 function M.stream_chat(chunk)
   if not chunk or chunk == "" then return end
   ensure_chat_buf()
-  with_modifiable(M.chat_buf, function()
+  with_modifiable(function()
     local n = api.nvim_buf_line_count(M.chat_buf)
     local last = api.nvim_buf_get_lines(M.chat_buf, n - 1, n, false)[1] or ""
     if chunk:find("\n", 1, true) then
@@ -225,15 +246,10 @@ end
 
 function M.set_busy(busy)
   M.busy = busy
-  if M.input_buf and api.nvim_buf_is_valid(M.input_buf) then
-    pcall(function()
-      local label = busy
-        and "Copilot is replying… (Esc to keep typing — submission disabled)"
-        or "Copilot > prompt (C-s send / CR send / q close)"
-      if M.input_win and api.nvim_win_is_valid(M.input_win) then
-        api.nvim_set_option_value("winbar", label, { win = M.input_win })
-      end
-    end)
+  if M.input_win and api.nvim_win_is_valid(M.input_win) then
+    pcall(api.nvim_set_option_value, "winbar",
+      busy and INPUT_WINBAR_BUSY or INPUT_WINBAR_IDLE,
+      { win = M.input_win })
   end
 end
 
@@ -241,20 +257,18 @@ function M.is_busy()
   return M.busy == true
 end
 
-function M.set_submit_handler(fn)
-  M.on_submit = fn
+local function is_own_buf(buf)
+  return buf == M.chat_buf or buf == M.input_buf
 end
 
 function M.get_source_buf()
-  if M.source_buf and api.nvim_buf_is_valid(M.source_buf)
-    and M.source_buf ~= M.chat_buf and M.source_buf ~= M.input_buf then
+  if M.source_buf and api.nvim_buf_is_valid(M.source_buf) and not is_own_buf(M.source_buf) then
     return M.source_buf
   end
   for _, win in ipairs(api.nvim_list_wins()) do
     local buf = api.nvim_win_get_buf(win)
-    if buf ~= M.chat_buf and buf ~= M.input_buf and api.nvim_buf_is_valid(buf) then
+    if api.nvim_buf_is_valid(buf) and not is_own_buf(buf) then
       M.source_buf = buf
-      M.source_win = win
       return buf
     end
   end

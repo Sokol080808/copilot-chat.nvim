@@ -1,7 +1,8 @@
 local M = {}
 
+math.randomseed(os.time() + (vim.loop.hrtime() % 0x7fffffff))
+
 local function uuid4()
-  math.randomseed(os.time() + (vim.loop.hrtime() % 1000000))
   local template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
   return (template:gsub("[xy]", function(c)
     local v = (c == "x") and math.random(0, 0xf) or math.random(8, 0xb)
@@ -21,22 +22,28 @@ local function decode_event(line)
   if not line or line == "" then
     return nil
   end
-  local ok, parsed = pcall(vim.fn.json_decode, line)
+  local ok, parsed = pcall(vim.json.decode, line)
   if not ok then
     return nil
   end
   return parsed
 end
 
+local function looks_like_auth_error(line)
+  local lower = line:lower()
+  return lower:match("authentication")
+      or lower:match("unauthorized")
+      or lower:match("not.*logged.*in")
+end
+
 --- Stream a single prompt through the copilot CLI.
 --- @param prompt string Plain text prompt.
 --- @param session_id string UUID used for --resume so the CLI manages history.
---- @param callbacks table { on_chunk(text), on_event(event), on_error(text), on_done(final_text) }
+--- @param callbacks table { on_chunk(text), on_error(text), on_done(final_text) }
 --- @return number|nil job_id
 function M.stream(prompt, session_id, callbacks)
   callbacks = callbacks or {}
   local on_chunk = callbacks.on_chunk or function() end
-  local on_event = callbacks.on_event or function() end
   local on_error = callbacks.on_error or function() end
   local on_done = callbacks.on_done or function() end
 
@@ -58,7 +65,7 @@ function M.stream(prompt, session_id, callbacks)
 
   local stdout_buf = ""
   local stderr_buf = ""
-  local final_text = ""
+  local final_parts = {}
   local saw_auth_error = false
 
   local function handle_event(event)
@@ -66,22 +73,18 @@ function M.stream(prompt, session_id, callbacks)
       return
     end
 
-    on_event(event)
-
     if event.type == "assistant.message_delta" then
       local data = event.data or {}
       local delta = data.deltaContent
       if type(delta) == "string" and delta ~= "" then
-        final_text = final_text .. delta
+        table.insert(final_parts, delta)
         on_chunk(delta)
       end
     elseif event.type == "assistant.message" then
       local data = event.data or {}
-      if type(data.content) == "string" and data.content ~= "" then
-        if final_text == "" then
-          final_text = data.content
-          on_chunk(data.content)
-        end
+      if type(data.content) == "string" and data.content ~= "" and #final_parts == 0 then
+        table.insert(final_parts, data.content)
+        on_chunk(data.content)
       end
     elseif event.type == "result" then
       if event.exitCode and event.exitCode ~= 0 then
@@ -96,9 +99,8 @@ function M.stream(prompt, session_id, callbacks)
       if not nl then
         break
       end
-      local line = buf:sub(1, nl - 1)
+      handle_event(decode_event(buf:sub(1, nl - 1)))
       buf = buf:sub(nl + 1)
-      handle_event(decode_event(line))
     end
     if leftover_ok and buf ~= "" then
       handle_event(decode_event(buf))
@@ -107,30 +109,16 @@ function M.stream(prompt, session_id, callbacks)
     return buf
   end
 
-  local function append_chunks(target, chunks)
-    for i, part in ipairs(chunks) do
-      if part then
-        target = target .. part
-        if i < #chunks then
-          target = target .. "\n"
-        end
-      end
-    end
-    return target
-  end
-
   return vim.fn.jobstart(cmd, {
     on_stdout = function(_, data)
-      stdout_buf = append_chunks(stdout_buf, data)
+      stdout_buf = stdout_buf .. table.concat(data, "\n")
       stdout_buf = drain_lines(stdout_buf, false)
     end,
     on_stderr = function(_, data)
-      stderr_buf = append_chunks(stderr_buf, data)
+      stderr_buf = stderr_buf .. table.concat(data, "\n")
       for _, line in ipairs(data or {}) do
-        if type(line) == "string" and line ~= "" then
-          if line:lower():match("authentication") or line:lower():match("unauthorized") or line:lower():match("not.*logged.*in") then
-            saw_auth_error = true
-          end
+        if type(line) == "string" and line ~= "" and looks_like_auth_error(line) then
+          saw_auth_error = true
         end
       end
     end,
@@ -141,7 +129,7 @@ function M.stream(prompt, session_id, callbacks)
         if saw_auth_error then
           on_error("Authentication required. Run :CopilotChatLogin or `copilot login` in your terminal.")
         else
-          local trimmed = (stderr_buf or ""):gsub("^%s+", ""):gsub("%s+$", "")
+          local trimmed = vim.trim(stderr_buf or "")
           if trimmed ~= "" then
             on_error("copilot CLI error (exit " .. exit_code .. "):\n" .. trimmed)
           else
@@ -150,7 +138,7 @@ function M.stream(prompt, session_id, callbacks)
         end
       end
 
-      on_done(final_text)
+      on_done(table.concat(final_parts))
     end,
   })
 end

@@ -33,11 +33,10 @@ local function send(prompt, on_text, on_done)
   local message = build_user_message(prompt)
   M._first_turn = false
   ui.set_busy(true)
+  ui.begin_stream()
 
-  local accumulated = ""
   M._current_job = api.stream(message, M.session_id, {
     on_chunk = function(chunk)
-      accumulated = accumulated .. chunk
       vim.schedule(function()
         if on_text then on_text(chunk) end
       end)
@@ -49,9 +48,10 @@ local function send(prompt, on_text, on_done)
     end,
     on_done = function(final_text)
       vim.schedule(function()
+        ui.end_stream()
         ui.set_busy(false)
         M._current_job = nil
-        if on_done then on_done(accumulated ~= "" and accumulated or (final_text or "")) end
+        if on_done then on_done(final_text or "") end
       end)
     end,
   })
@@ -70,10 +70,8 @@ end
 
 local function extract_fence(text, tag)
   if not text or text == "" then return nil end
-  local pat = "```" .. tag .. "\n(.-)\n```"
-  local _, _, body = text:find(pat)
+  local _, _, body = text:find("```" .. tag .. "\n(.-)\n```")
   if body then return body end
-  -- Fallback: any fenced block.
   local _, _, generic = text:find("```[%w%-_]*\n(.-)\n```")
   return generic
 end
@@ -91,30 +89,28 @@ local function close_message_block()
   ui.append_chat({ "", "---", "" })
 end
 
+local function reject_if_busy()
+  if not ui.is_busy() then return false end
+  ui.append_chat({ "", "> ⚠️ A reply is still streaming. Wait or run :CopilotChatCancel.", "" })
+  return true
+end
+
 local function submit_chat(prompt)
-  if not prompt or prompt:gsub("%s+", "") == "" then return end
-  if ui.is_busy() then
-    ui.append_chat({ "", "> ⚠️ A reply is still streaming. Wait or run :CopilotChatCancel.", "" })
-    return
-  end
+  if not prompt or vim.trim(prompt) == "" then return end
+  if reject_if_busy() then return end
 
   append_user_message("You", prompt)
   open_assistant_block()
   ui.clear_input()
 
-  send(prompt, function(chunk)
-    ui.stream_chat(chunk)
-  end, function()
+  send(prompt, ui.stream_chat, function()
     close_message_block()
   end)
 end
 
 local function submit_edit(prompt, range)
-  if not prompt or prompt:gsub("%s+", "") == "" then return end
-  if ui.is_busy() then
-    ui.append_chat({ "", "> ⚠️ A reply is still streaming. Wait or run :CopilotChatCancel.", "" })
-    return
-  end
+  if not prompt or vim.trim(prompt) == "" then return end
+  if reject_if_busy() then return end
 
   local source_buf, err = source_file_buf()
   if not source_buf then
@@ -156,9 +152,7 @@ local function submit_edit(prompt, range)
   open_assistant_block()
   ui.clear_input()
 
-  send(instructions, function(chunk)
-    ui.stream_chat(chunk)
-  end, function(full)
+  send(instructions, ui.stream_chat, function(full)
     local code = extract_fence(full, tag)
     if not code then
       ui.append_chat({ "", "> ⚠️ Edit failed: model did not return a fenced `" .. tag .. "` block.", "" })
@@ -187,10 +181,6 @@ end
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
 
-  ui.set_submit_handler(function(text)
-    submit_chat(text)
-  end)
-
   local group = vim.api.nvim_create_augroup("CopilotChatPreviewResize", { clear = true })
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
     group = group,
@@ -208,20 +198,17 @@ function M.ask()
   ui.focus_input()
 end
 
---- Submit the current input window contents as a chat message.
 function M._submit_input()
   local text = ui.input_text()
-  if text == "" or text:gsub("%s+", "") == "" then return end
+  if vim.trim(text) == "" then return end
   submit_chat(text)
 end
 
---- Send a chat prompt non-interactively (e.g. from a command).
 function M.send_prompt(prompt)
   ui.open()
   submit_chat(prompt)
 end
 
---- Edit the current source buffer with optional line range and explicit prompt.
 function M.edit(prompt, range)
   ui.open()
   if not prompt or prompt == "" then
@@ -244,6 +231,7 @@ function M.cancel()
   if M._current_job then
     pcall(vim.fn.jobstop, M._current_job)
     M._current_job = nil
+    ui.end_stream()
     ui.set_busy(false)
     ui.append_chat({ "", "> Cancelled.", "" })
   end
@@ -251,6 +239,7 @@ end
 
 function M.new_session()
   if M._current_job then M.cancel() end
+  diff.skip()
   M.session_id = api.new_session_id()
   M._first_turn = true
   ui.set_chat_lines({
