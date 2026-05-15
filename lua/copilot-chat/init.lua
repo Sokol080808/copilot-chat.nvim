@@ -121,6 +121,7 @@ local function send(prompt, on_text, on_done, send_opts)
   }, {
     cwd = send_opts.cwd,
     add_dirs = send_opts.add_dirs,
+    deny_writes = send_opts.deny_writes,
   })
 end
 
@@ -335,9 +336,10 @@ local function submit_edit(prompt, range)
 
   local tag = M.config.edit_fence_tag or "UPDATE"
   local instructions = table.concat({
-    "You are editing a file inside Neovim.",
-    "Return the COMPLETE updated file content in a single fenced code block opening with ```" .. tag .. " and closing with ```.",
-    "Do not add explanation outside the code block. Preserve the existing indentation style and only change what the request asks for — leave unrelated lines exactly as they are.",
+    "You are editing a file inside Neovim via the plugin's diff-preview flow.",
+    "DO NOT use write/edit/file-modification tools — they are disabled for this request. The user wants to review the change before it lands on disk.",
+    "Return the COMPLETE updated file content in a single fenced code block opening with ```" .. tag .. " and closing with ```. Nothing else. No prose. No explanation. The plugin will extract that block, overlay an inline diff in the user's buffer, and they will accept or reject it with :CopilotChatApply / :CopilotChatSkip.",
+    "Preserve the existing indentation style and only change what the request asks for — leave unrelated lines exactly as they are.",
     "",
     "Target file: " .. path,
     "",
@@ -396,6 +398,7 @@ local function submit_edit(prompt, range)
   end, {
     cwd = ctx.cwd,
     add_dirs = extra_dirs_for(ctx.open, ctx.cwd),
+    deny_writes = true,
   })
 end
 

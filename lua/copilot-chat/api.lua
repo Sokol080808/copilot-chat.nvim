@@ -70,6 +70,13 @@ function M.stream(prompt, session_id, callbacks, opts)
     table.insert(cmd, dir)
   end
 
+  if opts.deny_writes then
+    -- --deny-tool overrides --allow-all-tools per the CLI permissions docs.
+    -- Scoped to the call site (used for :CopilotChatEdit so the model can't
+    -- bypass our diff preview by calling write/edit tools directly).
+    table.insert(cmd, "--deny-tool=write")
+  end
+
   local stdout_buf = ""
   local stderr_buf = ""
   local final_parts = {}
