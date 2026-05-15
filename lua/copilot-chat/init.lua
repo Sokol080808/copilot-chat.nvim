@@ -432,8 +432,31 @@ function M.send_prompt(prompt, range)
 end
 
 function M.apply_pending()
+  -- Capture the target buffer before diff.apply nils M.pending.
+  local target_buf = diff.pending and diff.pending.source_buf or nil
+
   local ok, err = diff.apply()
-  if not ok then ui.append_chat({ "", "> " .. err, "" }) end
+  if not ok then
+    ui.append_chat({ "", "> " .. err, "" })
+    return
+  end
+
+  -- Persist the change to disk so "create file" actually creates the file.
+  -- This is what users expect after :CopilotChatApply — the diff preview
+  -- already showed them what's landing.
+  if target_buf and vim.api.nvim_buf_is_valid(target_buf) then
+    local name = vim.api.nvim_buf_get_name(target_buf)
+    if name and name ~= "" and vim.bo[target_buf].buftype == "" then
+      local save_ok, save_err = pcall(function()
+        vim.api.nvim_buf_call(target_buf, function()
+          vim.cmd("silent keepalt write")
+        end)
+      end)
+      if not save_ok then
+        ui.append_chat({ "", "> ⚠️ Saved to buffer but write to disk failed: " .. tostring(save_err) })
+      end
+    end
+  end
 end
 
 function M.skip_pending()

@@ -277,7 +277,12 @@ function M.stream_chat(chunk)
   ensure_chat_buf()
 
   if M._streaming then
+    local was_empty = #M._stream_pending == 0
     table.insert(M._stream_pending, chunk)
+    -- Render the first chunk synchronously so the user sees the reply start
+    -- with no perceptible delay (otherwise it waits up to STREAM_FLUSH_MS for
+    -- the next timer tick). Later chunks coalesce on the timer as before.
+    if was_empty then flush_stream() end
     return
   end
 
