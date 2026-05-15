@@ -12,12 +12,16 @@ cmd("CopilotChatOpen", function() require("copilot-chat").open() end)
 cmd("CopilotChatClose", function() require("copilot-chat").close() end)
 cmd("CopilotChatAsk", function(opts)
   local cc = require("copilot-chat")
+  local range = nil
+  if opts.range and opts.range > 0 then
+    range = { start_line = opts.line1, end_line = opts.line2 }
+  end
   if opts.args and opts.args ~= "" then
-    cc.send_prompt(opts.args)
+    cc.send_prompt(opts.args, range)
   else
     cc.ask()
   end
-end, { nargs = "?" })
+end, { nargs = "?", range = true })
 
 cmd("CopilotChatEdit", function(opts)
   local range = nil

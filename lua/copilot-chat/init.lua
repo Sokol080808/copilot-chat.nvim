@@ -27,8 +27,31 @@ local function build_user_message(prompt)
   return prompt
 end
 
-local function send(prompt, on_text, on_done)
+local function abs_path(p)
+  return vim.fn.fnamemodify(p, ":p")
+end
+
+--- Compute --add-dir entries for files outside the working directory.
+local function extra_dirs_for(open_files, cwd)
+  local cwd_abs = abs_path(cwd or vim.fn.getcwd())
+  if cwd_abs:sub(-1) ~= "/" then cwd_abs = cwd_abs .. "/" end
+  local seen, dirs = {}, {}
+  for _, f in ipairs(open_files or {}) do
+    local file_abs = abs_path(f)
+    if not vim.startswith(file_abs, cwd_abs) then
+      local parent = vim.fn.fnamemodify(file_abs, ":h")
+      if not seen[parent] then
+        seen[parent] = true
+        table.insert(dirs, parent)
+      end
+    end
+  end
+  return dirs
+end
+
+local function send(prompt, on_text, on_done, send_opts)
   ensure_session()
+  send_opts = send_opts or {}
 
   local message = build_user_message(prompt)
   M._first_turn = false
@@ -59,7 +82,49 @@ local function send(prompt, on_text, on_done)
         if on_done then on_done(final_text or "") end
       end)
     end,
+  }, {
+    cwd = send_opts.cwd,
+    add_dirs = send_opts.add_dirs,
   })
+end
+
+local function context_preamble(ctx, range)
+  local parts = {}
+  table.insert(parts, "[Editor context]")
+  table.insert(parts, "cwd: " .. ctx.cwd)
+
+  if ctx.active then
+    local active = "active file: " .. short_path(ctx.active.path)
+    if ctx.active.row then
+      active = active .. " (cursor: line " .. ctx.active.row .. ")"
+    end
+    table.insert(parts, active)
+  else
+    table.insert(parts, "active file: <none>")
+  end
+
+  local others = {}
+  for _, p in ipairs(ctx.open or {}) do
+    if not (ctx.active and ctx.active.path == p) then
+      table.insert(others, "  - " .. short_path(p))
+    end
+  end
+  if #others > 0 then
+    table.insert(parts, "other open files:")
+    vim.list_extend(parts, others)
+  end
+
+  if range and range.lines and #range.lines > 0 and ctx.active then
+    table.insert(parts, "user has selected lines "
+      .. range.start_line .. "-" .. range.end_line
+      .. " of " .. short_path(ctx.active.path) .. ":")
+    table.insert(parts, "```")
+    vim.list_extend(parts, range.lines)
+    table.insert(parts, "```")
+  end
+
+  table.insert(parts, "[End of editor context]")
+  return table.concat(parts, "\n")
 end
 
 local function ensure_trailing_nl(s)
@@ -128,17 +193,32 @@ local function reject_if_busy()
   return true
 end
 
-local function submit_chat(prompt)
+local function submit_chat(prompt, range)
   if not prompt or vim.trim(prompt) == "" then return end
   if reject_if_busy() then return end
+
+  local ctx = ui.get_editor_context()
+
+  if range and range.start_line and range.end_line and ctx.active then
+    local source_buf, _ = source_file_buf()
+    if source_buf then
+      range.lines = vim.api.nvim_buf_get_lines(source_buf, range.start_line - 1, range.end_line, false)
+    end
+  end
+
+  local preamble = context_preamble(ctx, range)
+  local final_prompt = preamble .. "\n\n" .. prompt
 
   append_user_message("You", prompt)
   open_assistant_block()
   ui.clear_input()
 
-  send(prompt, ui.stream_chat, function()
+  send(final_prompt, ui.stream_chat, function()
     close_message_block()
-  end)
+  end, {
+    cwd = ctx.cwd,
+    add_dirs = extra_dirs_for(ctx.open, ctx.cwd),
+  })
 end
 
 local function submit_edit(prompt, range)
@@ -180,13 +260,23 @@ local function submit_edit(prompt, range)
     instructions = instructions .. "\n\nFocus on this selection (lines " .. range.start_line .. "-" .. range.end_line .. "):\n```\n" .. selection .. "\n```"
   end
 
+  local ctx = ui.get_editor_context()
+  local others = {}
+  for _, p in ipairs(ctx.open or {}) do
+    if p ~= path then table.insert(others, "  - " .. short_path(p)) end
+  end
+  if #others > 0 then
+    instructions = instructions
+      .. "\n\nOther files currently open in the user's editor (use the view tool to read any of them if needed):\n"
+      .. table.concat(others, "\n")
+  end
+
   instructions = instructions .. "\n\nRequested change:\n" .. prompt
 
   append_user_message("You (edit)", prompt)
   ui.append_chat({ "", "> ✏️ Generating edit for `" .. label .. "`…" })
   ui.clear_input()
 
-  -- on_text=nil: don't pour the regenerated file into chat.
   send(instructions, nil, function(full)
     local code = extract_fence(full, tag)
     if not code then
@@ -212,7 +302,10 @@ local function submit_edit(prompt, range)
       "> ✏️ Edit ready (+" .. added .. " / -" .. removed .. "). `:CopilotChatApply` to accept, `:CopilotChatSkip` to discard.",
     })
     close_message_block()
-  end)
+  end, {
+    cwd = ctx.cwd,
+    add_dirs = extra_dirs_for(ctx.open, ctx.cwd),
+  })
 end
 
 function M.setup(opts)
@@ -241,9 +334,9 @@ function M._submit_input()
   submit_chat(text)
 end
 
-function M.send_prompt(prompt)
+function M.send_prompt(prompt, range)
   ui.open()
-  submit_chat(prompt)
+  submit_chat(prompt, range)
 end
 
 function M.edit(prompt, range)

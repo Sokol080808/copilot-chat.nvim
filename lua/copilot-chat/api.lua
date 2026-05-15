@@ -40,9 +40,11 @@ end
 --- @param prompt string Plain text prompt.
 --- @param session_id string UUID used for --resume so the CLI manages history.
 --- @param callbacks table { on_chunk(text), on_error(text), on_done(final_text) }
+--- @param opts table|nil { cwd = string, add_dirs = string[] }
 --- @return number|nil job_id
-function M.stream(prompt, session_id, callbacks)
+function M.stream(prompt, session_id, callbacks, opts)
   callbacks = callbacks or {}
+  opts = opts or {}
   local on_chunk = callbacks.on_chunk or function() end
   local on_error = callbacks.on_error or function() end
   local on_done = callbacks.on_done or function() end
@@ -62,6 +64,11 @@ function M.stream(prompt, session_id, callbacks)
     "-s",
     "--resume=" .. session_id,
   }
+
+  for _, dir in ipairs(opts.add_dirs or {}) do
+    table.insert(cmd, "--add-dir")
+    table.insert(cmd, dir)
+  end
 
   local stdout_buf = ""
   local stderr_buf = ""
@@ -110,6 +117,7 @@ function M.stream(prompt, session_id, callbacks)
   end
 
   return vim.fn.jobstart(cmd, {
+    cwd = opts.cwd,
     on_stdout = function(_, data)
       stdout_buf = stdout_buf .. table.concat(data, "\n")
       stdout_buf = drain_lines(stdout_buf, false)

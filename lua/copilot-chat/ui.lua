@@ -11,6 +11,7 @@ local M = {
   input_buf = nil,
   input_win = nil,
   source_buf = nil,
+  source_win = nil,
   busy = false,
   width = 60,
   input_height = 6,
@@ -114,9 +115,11 @@ function M.open()
     return
   end
 
-  local current_buf = api.nvim_get_current_buf()
+  local current_win = api.nvim_get_current_win()
+  local current_buf = api.nvim_win_get_buf(current_win)
   if current_buf ~= M.chat_buf and current_buf ~= M.input_buf then
     M.source_buf = current_buf
+    M.source_win = current_win
   end
 
   ensure_chat_buf()
@@ -306,18 +309,74 @@ local function is_own_buf(buf)
   return buf == M.chat_buf or buf == M.input_buf
 end
 
-function M.get_source_buf()
-  if M.source_buf and api.nvim_buf_is_valid(M.source_buf) and not is_own_buf(M.source_buf) then
-    return M.source_buf
+local function is_file_buf(buf)
+  return api.nvim_buf_is_valid(buf)
+    and not is_own_buf(buf)
+    and vim.bo[buf].buftype == ""
+    and vim.bo[buf].buflisted
+end
+
+local function active_source()
+  if M.source_win and api.nvim_win_is_valid(M.source_win) then
+    local buf = api.nvim_win_get_buf(M.source_win)
+    if is_file_buf(buf) then
+      return buf, M.source_win
+    end
+  end
+  if M.source_buf and is_file_buf(M.source_buf) then
+    return M.source_buf, nil
   end
   for _, win in ipairs(api.nvim_list_wins()) do
     local buf = api.nvim_win_get_buf(win)
-    if api.nvim_buf_is_valid(buf) and not is_own_buf(buf) then
+    if is_file_buf(buf) then
       M.source_buf = buf
-      return buf
+      M.source_win = win
+      return buf, win
     end
   end
-  return nil
+  return nil, nil
+end
+
+function M.get_source_buf()
+  local buf = active_source()
+  return buf
+end
+
+--- Snapshot of the user's editor state for the next chat turn.
+--- Returned shape:
+---   {
+---     cwd      = "/abs/path",
+---     active   = { path = "/abs/path/file.lua", row = 42 } | nil,
+---     open     = { "/abs/a.lua", "/abs/b.lua", ... },
+---   }
+function M.get_editor_context()
+  local ctx = { cwd = vim.fn.getcwd(), open = {}, active = nil }
+
+  local seen = {}
+  for _, buf in ipairs(api.nvim_list_bufs()) do
+    if api.nvim_buf_is_loaded(buf) and is_file_buf(buf) then
+      local name = api.nvim_buf_get_name(buf)
+      if name and name ~= "" and not seen[name] then
+        seen[name] = true
+        table.insert(ctx.open, name)
+      end
+    end
+  end
+
+  local active_buf, active_win = active_source()
+  if active_buf then
+    local name = api.nvim_buf_get_name(active_buf)
+    if name and name ~= "" then
+      local row = nil
+      if active_win and api.nvim_win_is_valid(active_win) then
+        local cur = api.nvim_win_get_cursor(active_win)
+        row = cur[1]
+      end
+      ctx.active = { path = name, row = row }
+    end
+  end
+
+  return ctx
 end
 
 return M
