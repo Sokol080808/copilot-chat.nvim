@@ -3,6 +3,8 @@ local api = vim.api
 local INPUT_WINBAR_IDLE = "Copilot > prompt (C-s send / CR send / q close)"
 local INPUT_WINBAR_BUSY = "Copilot is replying… (Esc to keep typing — submission disabled)"
 
+local STREAM_FLUSH_MS = 30
+
 local M = {
   chat_buf = nil,
   chat_win = nil,
@@ -13,6 +15,8 @@ local M = {
   width = 60,
   input_height = 6,
   _streaming = false,
+  _stream_pending = nil,
+  _stream_timer = nil,
 }
 
 local CHAT_HEADER = {
@@ -189,14 +193,58 @@ local function with_modifiable(fn)
   if not ok then error(err) end
 end
 
+local function append_chunk_to_chat(chunk)
+  if not (M.chat_buf and api.nvim_buf_is_valid(M.chat_buf)) then return end
+  local n = api.nvim_buf_line_count(M.chat_buf)
+  local last = api.nvim_buf_get_lines(M.chat_buf, n - 1, n, false)[1] or ""
+  if chunk:find("\n", 1, true) then
+    local merged = vim.split(last .. chunk, "\n", { plain = true })
+    api.nvim_buf_set_lines(M.chat_buf, n - 1, n, false, merged)
+  else
+    api.nvim_buf_set_lines(M.chat_buf, n - 1, n, false, { last .. chunk })
+  end
+end
+
+local function flush_stream()
+  local pending = M._stream_pending
+  if not pending or #pending == 0 then return end
+  M._stream_pending = {}
+
+  append_chunk_to_chat(table.concat(pending))
+  M.scroll_chat_to_bottom()
+  -- Force a screen repaint: nvim_buf_set_lines marks the buffer dirty but
+  -- won't trigger a redraw while the user is sitting in insert mode in the
+  -- input window. Without this, the chat looks frozen until they move.
+  pcall(vim.cmd, "redraw")
+end
+
+local function stop_stream_timer()
+  if M._stream_timer then
+    pcall(function()
+      M._stream_timer:stop()
+      if not M._stream_timer:is_closing() then
+        M._stream_timer:close()
+      end
+    end)
+    M._stream_timer = nil
+  end
+end
+
 function M.begin_stream()
   ensure_chat_buf()
   M._streaming = true
   set_chat_modifiable(true)
+  M._stream_pending = {}
+
+  stop_stream_timer()
+  M._stream_timer = (vim.uv or vim.loop).new_timer()
+  M._stream_timer:start(STREAM_FLUSH_MS, STREAM_FLUSH_MS, vim.schedule_wrap(flush_stream))
 end
 
 function M.end_stream()
   if not M._streaming then return end
+  stop_stream_timer()
+  flush_stream()
   M._streaming = false
   set_chat_modifiable(false)
 end
@@ -220,16 +268,13 @@ end
 function M.stream_chat(chunk)
   if not chunk or chunk == "" then return end
   ensure_chat_buf()
-  with_modifiable(function()
-    local n = api.nvim_buf_line_count(M.chat_buf)
-    local last = api.nvim_buf_get_lines(M.chat_buf, n - 1, n, false)[1] or ""
-    if chunk:find("\n", 1, true) then
-      local merged = vim.split(last .. chunk, "\n", { plain = true })
-      api.nvim_buf_set_lines(M.chat_buf, n - 1, n, false, merged)
-    else
-      api.nvim_buf_set_lines(M.chat_buf, n - 1, n, false, { last .. chunk })
-    end
-  end)
+
+  if M._streaming then
+    table.insert(M._stream_pending, chunk)
+    return
+  end
+
+  with_modifiable(function() append_chunk_to_chat(chunk) end)
   M.scroll_chat_to_bottom()
 end
 
