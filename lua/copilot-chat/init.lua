@@ -33,6 +33,11 @@ local function abs_path(p)
   return vim.fn.fnamemodify(p, ":p")
 end
 
+local function short_path(path)
+  if not path or path == "" then return "<unnamed>" end
+  return vim.fn.fnamemodify(path, ":~:.")
+end
+
 --- Compute --add-dir entries for files outside the working directory.
 local function extra_dirs_for(open_files, cwd)
   local cwd_abs = abs_path(cwd or vim.fn.getcwd())
@@ -153,11 +158,6 @@ local function diff_stats(old_text, new_text)
     end
   end
   return added, removed
-end
-
-local function short_path(path)
-  if not path or path == "" then return "<unnamed>" end
-  return vim.fn.fnamemodify(path, ":~:.")
 end
 
 local function source_file_buf()
